@@ -1,0 +1,2 @@
+/Users/anthony/StudioProjects/nylo/android/app/.cxx/Debug/2u1h4m4t/x86/CMakeFiles/edit_cache.dir
+/Users/anthony/StudioProjects/nylo/android/app/.cxx/Debug/2u1h4m4t/x86/CMakeFiles/rebuild_cache.dir
