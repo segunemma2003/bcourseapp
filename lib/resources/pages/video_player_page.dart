@@ -23,14 +23,12 @@ class _VideoPlayerPageState extends NyPage<VideoPlayerPage>
   bool _isFullScreen = false;
 
   String? videoPath;
-  String? watermarkText;
 
   @override
   get init => () async {
         // Get passed data
         Map<String, dynamic> data = widget.data();
         videoPath = data['videoPath'];
-        watermarkText = data['watermarkText'];
 
         if (videoPath == null) {
           setState(() {
@@ -318,31 +316,6 @@ class _VideoPlayerPageState extends NyPage<VideoPlayerPage>
                           child: Icon(
                             Icons.fullscreen,
                             color: Colors.white,
-                          ),
-                        ),
-                      ),
-                    ),
-
-                  // Watermark text (if provided) - adjust position in fullscreen
-                  if (watermarkText != null && _isInitialized)
-                    Positioned(
-                      left: 10,
-                      bottom: _isFullScreen
-                          ? 100
-                          : 80, // Adjust position based on fullscreen
-                      child: Container(
-                        padding:
-                            EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.5),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          "Bhavani $watermarkText",
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w500,
                           ),
                         ),
                       ),

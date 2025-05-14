@@ -38,6 +38,9 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
   }
 
   @override
+  LoadingStyle get loadingStyle => LoadingStyle.skeletonizer();
+
+  @override
   get init => () async {
         // Start multiple loading indicators
         setLoading(true, name: 'course_detail');
