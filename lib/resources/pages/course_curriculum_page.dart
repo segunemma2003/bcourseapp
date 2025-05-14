@@ -20,16 +20,12 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
   String totalVideos = "";
   String totalDuration = "";
 
-  // Pagination variables
-  int _currentPage = 1;
-  int _itemsPerPage = 7;
-  int _totalPages = 1;
-
   // Download status tracking
   Map<int, bool> _downloadingStatus = {};
   Map<int, bool> _downloadedStatus = {};
   Map<int, double> _downloadProgress =
       {}; // Store download progress for each item
+  Map<int, bool> _watermarkingStatus = {}; // Track watermarking status
 
   // Service
   final VideoService _videoService = VideoService();
@@ -40,6 +36,9 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
   // User information
   String _username = "User";
   String _email = "";
+
+  // Scroll controller for the ListView
+  ScrollController _scrollController = ScrollController();
 
   @override
   void initState() {
@@ -55,6 +54,8 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
         String courseId = update['courseId'];
         String videoId = update['videoId'];
         double progress = update['progress'];
+        // Get the watermarking status if available
+        bool isWatermarking = update['isWatermarking'] ?? false;
 
         // Only update if this is for our current course
         if (courseId == course!.id.toString()) {
@@ -66,6 +67,7 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
                 _downloadProgress[index] = progress;
                 _downloadingStatus[index] = progress < 1.0;
                 _downloadedStatus[index] = progress >= 1.0;
+                _watermarkingStatus[index] = isWatermarking;
               });
             }
           } catch (e) {
@@ -80,6 +82,10 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
   void dispose() {
     // Cancel stream subscription to avoid memory leaks
     _progressSubscription?.cancel();
+
+    // Dispose the scroll controller
+    _scrollController.dispose();
+
     super.dispose();
   }
 
@@ -120,13 +126,10 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
             curriculumItems = [];
           }
 
-          // Calculate total pages
-          _totalPages = (curriculumItems.length / _itemsPerPage).ceil();
-          if (_totalPages < 1) _totalPages = 1; // Ensure at least one page
-
           // Get username for watermarking
           try {
             var user = await Auth.data();
+            print(user);
             if (user != null && user.containsKey('full_name')) {
               _username = user['full_name'];
             }
@@ -141,6 +144,7 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
           // Initialize progress tracking
           for (int i = 0; i < curriculumItems.length; i++) {
             _downloadProgress[i] = 0.0;
+            _watermarkingStatus[i] = false;
           }
 
           // Check download status for each video
@@ -173,9 +177,13 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
         bool isDownloading =
             _videoService.isDownloading(courseIdStr, videoIdStr);
 
+        // Check if watermarking
+        bool isWatermarking =
+            _videoService.isWatermarking(courseIdStr, videoIdStr);
+
         // Get current progress
         double progress = 0.0;
-        if (isDownloading) {
+        if (isDownloading || isWatermarking) {
           progress = _videoService.getProgress(courseIdStr, videoIdStr);
         } else if (isDownloaded) {
           progress = 1.0; // If downloaded, progress is 100%
@@ -184,6 +192,7 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
         setState(() {
           _downloadedStatus[i] = isDownloaded;
           _downloadingStatus[i] = isDownloading;
+          _watermarkingStatus[i] = isWatermarking;
           _downloadProgress[i] = progress;
         });
       }
@@ -204,13 +213,14 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
     if (success) {
       setState(() {
         _downloadingStatus[index] = false;
+        _watermarkingStatus[index] = false;
         _downloadProgress[index] = 0.0;
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(trans("Download canceled")),
-          backgroundColor: Colors.blue,
+          backgroundColor: Colors.orange,
           duration: const Duration(seconds: 2),
         ),
       );
@@ -273,6 +283,7 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
 
     setState(() {
       _downloadingStatus[index] = true;
+      _watermarkingStatus[index] = false;
       _downloadProgress[index] = 0.0;
     });
 
@@ -335,7 +346,7 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
         courseId: course!.id.toString(),
         videoId: index.toString(),
         watermarkText:
-            _username, // The player should also display email in watermark
+            _username, // This is still needed for service but won't be shown in player
         context: context,
       );
     } else {
@@ -404,7 +415,7 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
                   },
                 ),
                 ListTile(
-                  leading: Icon(Icons.refresh, color: Colors.blue),
+                  leading: Icon(Icons.refresh, color: Colors.orange),
                   title: Text(trans("Redownload video")),
                   onTap: () {
                     Navigator.pop(context);
@@ -427,8 +438,10 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
     );
   }
 
-  // New method to show options for downloading videos
+  // Enhanced method to show options for downloading videos, now with watermarking status
   void _showDownloadingOptions(int index) {
+    bool isWatermarking = _watermarkingStatus[index] ?? false;
+
     showModalBottomSheet(
       context: context,
       shape: RoundedRectangleBorder(
@@ -447,15 +460,18 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
                   child: LinearProgressIndicator(
                     value: _downloadProgress[index],
                     backgroundColor: Colors.grey[300],
-                    valueColor: AlwaysStoppedAnimation<Color>(Colors.amber),
+                    valueColor: AlwaysStoppedAnimation<Color>(
+                        isWatermarking ? Colors.orange : Colors.amber),
                   ),
                 ),
                 Padding(
                   padding: const EdgeInsets.only(bottom: 16.0),
                   child: Text(
-                    "${(_downloadProgress[index]! * 100).toInt()}% ${trans("Downloaded")}",
+                    isWatermarking
+                        ? "${(_downloadProgress[index]! * 100).toInt()}% ${trans("Adding watermark...")}"
+                        : "${(_downloadProgress[index]! * 100).toInt()}% ${trans("Downloaded")}",
                     style: TextStyle(
-                      color: Colors.amber,
+                      color: isWatermarking ? Colors.orange : Colors.amber,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
@@ -494,7 +510,7 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
             ),
             TextButton(
               child: Text(trans("Redownload")),
-              style: TextButton.styleFrom(foregroundColor: Colors.blue),
+              style: TextButton.styleFrom(foregroundColor: Colors.orange),
               onPressed: () {
                 Navigator.of(context).pop();
                 _downloadVideo(index, isRedownload: true);
@@ -556,7 +572,7 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(trans("Video deleted")),
-          backgroundColor: Colors.blue,
+          backgroundColor: Colors.orange,
           duration: const Duration(seconds: 2),
         ),
       );
@@ -571,37 +587,8 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
     }
   }
 
-  void _nextPage() {
-    if (_currentPage < _totalPages) {
-      setState(() {
-        _currentPage++;
-      });
-    }
-  }
-
-  void _previousPage() {
-    if (_currentPage > 1) {
-      setState(() {
-        _currentPage--;
-      });
-    }
-  }
-
   @override
   Widget view(BuildContext context) {
-    // Calculate items for current page
-    List<dynamic> currentPageItems = [];
-
-    if (curriculumItems.isNotEmpty) {
-      int startIndex = (_currentPage - 1) * _itemsPerPage;
-      int endIndex = startIndex + _itemsPerPage;
-      if (endIndex > curriculumItems.length) {
-        endIndex = curriculumItems.length;
-      }
-
-      currentPageItems = curriculumItems.sublist(startIndex, endIndex);
-    }
-
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
@@ -653,83 +640,37 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
               child: curriculumItems.isEmpty
                   ? _buildEmptyState()
                   : ListView.separated(
+                      controller: _scrollController, // Using scroll controller
                       padding: EdgeInsets.zero, // Remove default padding
-                      itemCount: currentPageItems.length,
+                      itemCount: curriculumItems.length,
                       separatorBuilder: (context, index) => Divider(
                         height: 1,
                         thickness: 1,
                         color: Colors.grey[200],
                       ),
                       itemBuilder: (context, index) {
-                        final globalIndex =
-                            (_currentPage - 1) * _itemsPerPage + index;
-                        final item = currentPageItems[index];
+                        final item = curriculumItems[index];
                         final bool isDownloaded =
-                            _downloadedStatus[globalIndex] ?? false;
+                            _downloadedStatus[index] ?? false;
                         final bool isDownloading =
-                            _downloadingStatus[globalIndex] ?? false;
-                        final double progress =
-                            _downloadProgress[globalIndex] ?? 0.0;
+                            _downloadingStatus[index] ?? false;
+                        final bool isWatermarking =
+                            _watermarkingStatus[index] ?? false;
+                        final double progress = _downloadProgress[index] ?? 0.0;
 
                         return _buildLessonItem(
-                          (globalIndex + 1).toString(),
+                          (index + 1).toString(),
                           item['title'] ?? 'Video',
                           item['duration'] ?? '-:--',
                           isDownloaded: isDownloaded,
                           isDownloading: isDownloading,
+                          isWatermarking: isWatermarking,
                           progress: progress,
-                          onTap: () => _handleVideoTap(globalIndex),
+                          onTap: () => _handleVideoTap(index),
                         );
                       },
                     ),
             ),
-
-            // Pagination Controls - show only if there's more than one page
-            if (_totalPages > 1 && curriculumItems.isNotEmpty)
-              Container(
-                padding: EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.grey.shade200,
-                      blurRadius: 4,
-                      offset: Offset(0, -2),
-                    ),
-                  ],
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    // Previous page button
-                    IconButton(
-                      icon: Icon(Icons.arrow_back_ios, size: 16),
-                      onPressed: _currentPage > 1 ? _previousPage : null,
-                      color: _currentPage > 1
-                          ? Colors.black
-                          : Colors.grey.shade400,
-                    ),
-
-                    // Page indicator
-                    Text(
-                      "Page $_currentPage of $_totalPages",
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-
-                    // Next page button
-                    IconButton(
-                      icon: Icon(Icons.arrow_forward_ios, size: 16),
-                      onPressed: _currentPage < _totalPages ? _nextPage : null,
-                      color: _currentPage < _totalPages
-                          ? Colors.black
-                          : Colors.grey.shade400,
-                    ),
-                  ],
-                ),
-              ),
           ],
         ),
       ),
@@ -774,6 +715,7 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
     String duration, {
     required bool isDownloaded,
     required bool isDownloading,
+    required bool isWatermarking,
     required double progress,
     required VoidCallback onTap,
   }) {
@@ -819,14 +761,15 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
                     ),
                   ),
                   // Show progress bar if downloading
-                  if (isDownloading)
+                  if (isDownloading || isWatermarking)
                     Container(
                       margin: EdgeInsets.only(top: 4),
                       height: 3,
                       child: LinearProgressIndicator(
                         value: progress,
                         backgroundColor: Colors.grey[300],
-                        valueColor: AlwaysStoppedAnimation<Color>(Colors.amber),
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                            isWatermarking ? Colors.orange : Colors.amber),
                       ),
                     ),
                 ],
@@ -834,7 +777,7 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
             ),
 
             // Action button (play, download, or loading)
-            isDownloading
+            (isDownloading || isWatermarking)
                 ? Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -842,7 +785,7 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
                         "${(progress * 100).toInt()}%",
                         style: TextStyle(
                           fontSize: 10,
-                          color: Colors.amber,
+                          color: isWatermarking ? Colors.orange : Colors.amber,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
@@ -853,8 +796,8 @@ class _CourseCurriculumPageState extends NyPage<CourseCurriculumPage> {
                         child: CircularProgressIndicator(
                           strokeWidth: 2,
                           value: progress,
-                          valueColor:
-                              AlwaysStoppedAnimation<Color>(Colors.amber),
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                              isWatermarking ? Colors.orange : Colors.amber),
                         ),
                       ),
                       SizedBox(width: 8),

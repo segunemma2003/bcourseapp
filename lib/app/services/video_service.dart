@@ -40,6 +40,9 @@ class VideoService {
   final Map<String, double> _downloadProgress = {};
   final Map<String, bool> _downloadingStatus = {};
 
+  // Map to track watermarking status
+  final Map<String, bool> _watermarkingStatus = {};
+
   // Stream controller for download progress updates
   final StreamController<Map<String, dynamic>> _progressStreamController =
       StreamController<Map<String, dynamic>>.broadcast();
@@ -115,11 +118,18 @@ class VideoService {
               }
             }
 
+            // Get watermarking status
+            dynamic watermarkingStatusRaw =
+                await NyStorage.read('watermarking_$downloadKey');
+            bool isWatermarking = watermarkingStatusRaw == true;
+            _watermarkingStatus[downloadKey] = isWatermarking;
+
             _downloadProgress[downloadKey] = progress;
 
-            // Notify listeners
+            // Notify listeners with watermarking status
             _notifyProgressUpdate(
-                courseId, videoId, _downloadProgress[downloadKey] ?? 0.0);
+                courseId, videoId, _downloadProgress[downloadKey] ?? 0.0,
+                isWatermarking: isWatermarking);
 
             // Continue download in background if needed
             if (downloadData.containsKey('videoUrl') &&
@@ -142,6 +152,7 @@ class VideoService {
                 courseId: downloadData['courseId'],
                 videoId: downloadData['videoId'],
                 watermarkText: downloadData['watermarkText'],
+                email: downloadData['email'] ?? "", // Get email
                 course: course,
                 curriculum: curriculum,
               );
@@ -168,6 +179,12 @@ class VideoService {
     return _downloadingStatus[key] ?? false;
   }
 
+  // Method to check if watermarking is in progress
+  bool isWatermarking(String courseId, String videoId) {
+    String key = '${courseId}_${videoId}';
+    return _watermarkingStatus[key] ?? false;
+  }
+
   // Method to start download in background
   Future<bool> startBackgroundDownload({
     required String videoUrl,
@@ -188,6 +205,7 @@ class VideoService {
 
       // Mark as downloading
       _downloadingStatus[downloadKey] = true;
+      _watermarkingStatus[downloadKey] = false;
       _downloadProgress[downloadKey] = 0.0;
 
       // Save to NyStorage for persistence
@@ -196,12 +214,16 @@ class VideoService {
         courseId: courseId,
         videoId: videoId,
         watermarkText: watermarkText,
+        email: email,
         course: course,
         curriculum: curriculum,
       );
 
+      // Save watermarking status
+      await NyStorage.save('watermarking_$downloadKey', false);
+
       // Notify about initial progress
-      _notifyProgressUpdate(courseId, videoId, 0.0);
+      _notifyProgressUpdate(courseId, videoId, 0.0, isWatermarking: false);
 
       // Log the download start
       NyLogger.info(
@@ -215,9 +237,12 @@ class VideoService {
           videoId: videoId,
           watermarkText: watermarkText,
           email: email, // Pass email
-          onProgress: (progress) {
-            _notifyProgressUpdate(courseId, videoId, progress);
+          onProgress: (progress, isWatermarking) {
+            _watermarkingStatus[downloadKey] = isWatermarking;
+            _notifyProgressUpdate(courseId, videoId, progress,
+                isWatermarking: isWatermarking);
             NyStorage.save('progress_$downloadKey', progress);
+            NyStorage.save('watermarking_$downloadKey', isWatermarking);
           },
         );
 
@@ -236,7 +261,8 @@ class VideoService {
 
         // Update status on error
         _downloadingStatus[downloadKey] = false;
-        _notifyProgressUpdate(courseId, videoId, 0.0);
+        _watermarkingStatus[downloadKey] = false;
+        _notifyProgressUpdate(courseId, videoId, 0.0, isWatermarking: false);
 
         // Remove from pending downloads
         await _removeFromPendingDownloads(courseId, videoId);
@@ -249,6 +275,7 @@ class VideoService {
       // Cleanup in case of error
       String downloadKey = '${courseId}_${videoId}';
       _downloadingStatus[downloadKey] = false;
+      _watermarkingStatus[downloadKey] = false;
 
       return false;
     }
@@ -279,6 +306,7 @@ class VideoService {
       // Save progress
       String downloadKey = '${courseId}_${videoId}';
       await NyStorage.save('progress_$downloadKey', 0.0);
+      await NyStorage.save('watermarking_$downloadKey', false);
 
       // Read current list - ensure we're working with a List
       dynamic existingData = await NyStorage.read('pending_downloads');
@@ -328,10 +356,11 @@ class VideoService {
         // Update status
         String downloadKey = '${courseId}_${videoId}';
         _downloadingStatus[downloadKey] = false;
+        _watermarkingStatus[downloadKey] = false;
         _downloadProgress[downloadKey] = 0.0;
 
         // Notify about deletion
-        _notifyProgressUpdate(courseId, videoId, 0.0);
+        _notifyProgressUpdate(courseId, videoId, 0.0, isWatermarking: false);
 
         NyLogger.info(
             '[VideoService] Video deleted: $videoId in course $courseId');
@@ -360,13 +389,14 @@ class VideoService {
 
       // Update status
       _downloadingStatus[downloadKey] = false;
+      _watermarkingStatus[downloadKey] = false;
       _downloadProgress[downloadKey] = 0.0;
 
       // Remove from pending downloads
       await _removeFromPendingDownloads(courseId, videoId);
 
       // Notify about cancel
-      _notifyProgressUpdate(courseId, videoId, 0.0);
+      _notifyProgressUpdate(courseId, videoId, 0.0, isWatermarking: false);
 
       NyLogger.info(
           '[VideoService] Download canceled for video $videoId in course $courseId');
@@ -397,9 +427,12 @@ class VideoService {
         videoId: videoId,
         watermarkText: watermarkText,
         email: email, // Pass email
-        onProgress: (progress) {
-          _notifyProgressUpdate(courseId, videoId, progress);
+        onProgress: (progress, isWatermarking) {
+          _watermarkingStatus[downloadKey] = isWatermarking;
+          _notifyProgressUpdate(courseId, videoId, progress,
+              isWatermarking: isWatermarking);
           NyStorage.save('progress_$downloadKey', progress);
+          NyStorage.save('watermarking_$downloadKey', isWatermarking);
         },
       );
 
@@ -437,9 +470,11 @@ class VideoService {
 
     // Update status
     _downloadingStatus[downloadKey] = false;
+    _watermarkingStatus[downloadKey] = false;
     if (success) {
       _downloadProgress[downloadKey] = 1.0;
       await NyStorage.save('progress_$downloadKey', 1.0);
+      await NyStorage.save('watermarking_$downloadKey', false);
     }
 
     // Remove from pending downloads
@@ -455,16 +490,19 @@ class VideoService {
     }
 
     // Notify listeners about completion
-    _notifyProgressUpdate(courseId, videoId, success ? 1.0 : 0.0);
+    _notifyProgressUpdate(courseId, videoId, success ? 1.0 : 0.0,
+        isWatermarking: false);
   }
 
-  // Notify progress update
-  void _notifyProgressUpdate(String courseId, String videoId, double progress) {
+  // Notify progress update with watermarking status
+  void _notifyProgressUpdate(String courseId, String videoId, double progress,
+      {bool isWatermarking = false}) {
     // Add to stream
     _progressStreamController.add({
       'courseId': courseId,
       'videoId': videoId,
       'progress': progress,
+      'isWatermarking': isWatermarking,
     });
   }
 
@@ -561,7 +599,7 @@ class VideoService {
     required String videoId,
     required String watermarkText,
     String email = "",
-    Function(double)? onProgress,
+    Function(double, bool)? onProgress, // Updated to include watermarking flag
   }) async {
     try {
       // Request storage permission
@@ -646,7 +684,8 @@ class VideoService {
             if (total != -1) {
               double progress = received / total;
               if (onProgress != null) {
-                onProgress(progress * 0.7); // First 70% is for downloading
+                onProgress(
+                    progress * 0.7, false); // First 70% is for downloading
               }
               NyLogger.info(
                   '[VideoService] Download progress: ${(progress * 100).toStringAsFixed(1)}%');
@@ -765,7 +804,11 @@ class VideoService {
         return false;
       }
 
-      // If we've reached here, the file is valid - continue with watermarking
+      // If we've reached here, the file is valid - signal watermarking progress
+      if (onProgress != null) {
+        onProgress(0.7, true); // Start watermarking at 70%
+      }
+
       NyLogger.info(
           '[VideoService] Adding logo and username watermark to video');
 
@@ -796,23 +839,43 @@ class VideoService {
       if (File(logoPath).existsSync()) {
         NyLogger.info('[VideoService] Trying two-step watermarking approach');
 
-        // Step 1: Apply just the logo overlay with simplified scaling
+        // Step 1: Apply just the logo overlay with simplified scaling and a semi-transparent background
         final logoOnlyCommand =
             '-y -i $tempFilePath -i $logoPath -filter_complex '
-            '"[1:v]scale=100:-1[logo];[0:v][logo]overlay=10:H-h-10" '
+            '"[1:v]scale=100:-1,colorchannelmixer=aa=0.7[logo];[0:v][logo]overlay=10:H-h-10" '
             '-codec:a copy ${tempFilePath}_with_logo.mp4';
 
         final logoSession = await FFmpegKit.execute(logoOnlyCommand);
         final logoReturnCode = await logoSession.getReturnCode();
 
+        // Format watermark text with proper email alignment
+        String formattedWatermarkText = watermarkText;
+        if (email.isNotEmpty) {
+          formattedWatermarkText = watermarkText; // Keep original username
+          email = email.trim(); // Ensure email is trimmed
+        }
+
         if (ReturnCode.isSuccess(logoReturnCode)) {
           NyLogger.info(
               '[VideoService] Logo overlay succeeded, adding text watermark');
 
+          if (onProgress != null) {
+            onProgress(0.85, true); // 85% progress after logo added
+          }
+
           // Step 2: Add text watermark to the logo-watermarked video
-          final textCommand = '-y -i ${tempFilePath}_with_logo.mp4 -vf '
-              '"drawtext=text=\'$watermarkText\':fontcolor=white:fontsize=24:x=W-tw-10:y=H-th-10:box=1:boxcolor=black@0.5:boxborderw=5" '
-              '-codec:a copy $outputPath';
+          // Format watermark text command based on whether email is included
+          String textCommand;
+          if (email.isNotEmpty) {
+            textCommand = '-y -i ${tempFilePath}_with_logo.mp4 -vf '
+                '"drawtext=text=\'$watermarkText\':fontcolor=white:fontsize=24:x=W-tw-10:y=H-th-30:box=1:boxcolor=black@0.5:boxborderw=5,'
+                'drawtext=text=\'$email\':fontcolor=white:fontsize=20:x=W-tw-10:y=H-th-10:box=1:boxcolor=black@0.5:boxborderw=5" '
+                '-codec:a copy $outputPath';
+          } else {
+            textCommand = '-y -i ${tempFilePath}_with_logo.mp4 -vf '
+                '"drawtext=text=\'$watermarkText\':fontcolor=white:fontsize=24:x=W-tw-10:y=H-th-10:box=1:boxcolor=black@0.5:boxborderw=5" '
+                '-codec:a copy $outputPath';
+          }
 
           final textSession = await FFmpegKit.execute(textCommand);
           final textReturnCode = await textSession.getReturnCode();
@@ -820,6 +883,10 @@ class VideoService {
           if (ReturnCode.isSuccess(textReturnCode)) {
             NyLogger.info('[VideoService] Two-step watermark succeeded');
             watermarkSuccess = true;
+
+            if (onProgress != null) {
+              onProgress(1.0, false); // 100% complete, watermarking done
+            }
           } else {
             NyLogger.error('[VideoService] Text watermark step failed');
             // Log errors
@@ -880,7 +947,7 @@ class VideoService {
             NyLogger.info(
                 '[VideoService] FFmpeg processing completed successfully');
             if (onProgress != null) {
-              onProgress(1.0); // 100% complete
+              onProgress(1.0, false); // 100% complete
             }
           } else {
             NyLogger.error(
@@ -897,7 +964,8 @@ class VideoService {
                 (stats.getTime() / 5000) *
                     0.3; // Assuming video is around 5 seconds
             ffmpegProgress = ffmpegProgress > 1.0 ? 1.0 : ffmpegProgress;
-            onProgress(ffmpegProgress);
+            onProgress(
+                ffmpegProgress, true); // Indicate watermarking in progress
           }
         });
 
@@ -918,9 +986,19 @@ class VideoService {
 
         if (await tempFile.exists()) {
           // Try with text-only watermark (with -y flag)
-          final simpleCommand =
-              '-y -i $tempFilePath -vf "drawtext=text=\'Bhavani $watermarkText\':fontcolor=white:fontsize=24:x=10:y=h-th-10:box=1:boxcolor=black@0.5:boxborderw=5" '
-              '-codec:a copy $outputPath';
+          String simpleCommand;
+
+          // Format text command based on email presence
+          if (email.isNotEmpty) {
+            simpleCommand = '-y -i $tempFilePath -vf '
+                '"drawtext=text=\'$watermarkText\':fontcolor=white:fontsize=24:x=10:y=h-th-30:box=1:boxcolor=black@0.5:boxborderw=5,'
+                'drawtext=text=\'$email\':fontcolor=white:fontsize=20:x=10:y=h-th-10:box=1:boxcolor=black@0.5:boxborderw=5" '
+                '-codec:a copy $outputPath';
+          } else {
+            simpleCommand = '-y -i $tempFilePath -vf '
+                '"drawtext=text=\'$watermarkText\':fontcolor=white:fontsize=24:x=10:y=h-th-10:box=1:boxcolor=black@0.5:boxborderw=5" '
+                '-codec:a copy $outputPath';
+          }
 
           final backupSession = await FFmpegKit.execute(simpleCommand);
           final backupReturnCode = await backupSession.getReturnCode();
@@ -998,7 +1076,7 @@ class VideoService {
         // Play video using Nylo's routeTo with VideoPlayerPage
         routeTo(VideoPlayerPage.path, data: {
           'videoPath': videoPath,
-          'watermarkText': watermarkText,
+          // Removed watermarkText as we don't need it in the player any more
         });
       } else {
         // Show error - videos must be downloaded first
@@ -1077,21 +1155,38 @@ class VideoService {
       String inputPath, String outputPath, String logoPath, String username,
       [String email = ""]) {
     File logoFile = File(logoPath);
+
     // Check if logo file exists without awaiting
-    String watermarkText = username;
-    if (email.isNotEmpty) {
-      watermarkText = "$username\\n$email"; // Use \n for newline in FFmpeg text
-    }
     if (logoFile.existsSync()) {
-      // Simplified command to overlay logo with scaling and text
-      return '-y -i $inputPath -i $logoPath -filter_complex '
-          '"[1:v]scale=100:-1[logo];[0:v][logo]overlay=10:main_h-overlay_h-10, '
-          'drawtext=text=\'$watermarkText\':fontcolor=white:fontsize=24:x=w-tw-10:y=h-th-10:box=1:boxcolor=black@0.5:boxborderw=5" '
-          '-codec:a copy $outputPath';
+      // Command with logo overlay and transparent background
+      if (email.isNotEmpty) {
+        // With email address (properly aligned)
+        return '-y -i $inputPath -i $logoPath -filter_complex '
+            '"[1:v]scale=100:-1,colorchannelmixer=aa=0.7[logo];[0:v][logo]overlay=10:main_h-overlay_h-10, '
+            'drawtext=text=\'$username\':fontcolor=white:fontsize=24:x=w-tw-10:y=h-th-30:box=1:boxcolor=black@0.5:boxborderw=5,'
+            'drawtext=text=\'$email\':fontcolor=white:fontsize=20:x=w-tw-10:y=h-th-10:box=1:boxcolor=black@0.5:boxborderw=5" '
+            '-codec:a copy $outputPath';
+      } else {
+        // Without email
+        return '-y -i $inputPath -i $logoPath -filter_complex '
+            '"[1:v]scale=100:-1,colorchannelmixer=aa=0.7[logo];[0:v][logo]overlay=10:main_h-overlay_h-10, '
+            'drawtext=text=\'$username\':fontcolor=white:fontsize=24:x=w-tw-10:y=h-th-10:box=1:boxcolor=black@0.5:boxborderw=5" '
+            '-codec:a copy $outputPath';
+      }
     } else {
       // Fallback to text-only watermark with -y flag
-      return '-y -i $inputPath -vf "drawtext=text=\'Bhavani $watermarkText\':fontcolor=white:fontsize=24:x=10:y=h-th-10:box=1:boxcolor=black@0.5:boxborderw=5" '
-          '-codec:a copy $outputPath';
+      if (email.isNotEmpty) {
+        // With email address (properly aligned)
+        return '-y -i $inputPath -vf '
+            '"drawtext=text=\'$username\':fontcolor=white:fontsize=24:x=10:y=h-th-30:box=1:boxcolor=black@0.5:boxborderw=5,'
+            'drawtext=text=\'$email\':fontcolor=white:fontsize=20:x=10:y=h-th-10:box=1:boxcolor=black@0.5:boxborderw=5" '
+            '-codec:a copy $outputPath';
+      } else {
+        // Without email
+        return '-y -i $inputPath -vf '
+            '"drawtext=text=\'$username\':fontcolor=white:fontsize=24:x=10:y=h-th-10:box=1:boxcolor=black@0.5:boxborderw=5" '
+            '-codec:a copy $outputPath';
+      }
     }
   }
 
