@@ -1,0 +1,110 @@
+# Nylo - Micro-framework for Flutter.
+#
+# Website: https://nylo.dev
+# Official repository: https://github.com/nylo-core/nylo
+# Author: Anthony Gordon <https://github.com/agordn52>
+
+name: flutter_app
+description: A new Nylo Flutter application.
+
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+  flutter: ">=3.24.0 <4.0.0"
+dependencies:
+  url_launcher: ^6.2.6
+  google_fonts: ^6.2.1
+  analyzer: ^6.7.0
+  intl: ^0.19.0
+  nylo_framework: ^6.8.5
+  pretty_dio_logger: ^1.4.0
+  cupertino_icons: ^1.0.8
+  path_provider: ^2.1.4
+  flutter_local_notifications: ^19.1.0
+  font_awesome_flutter: ^10.8.0
+  scaffold_ui: ^1.2.7
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  flutter_svg: ^2.1.0
+  video_player: ^2.9.5
+  google_sign_in: ^6.3.0
+  cached_network_image: ^3.4.1
+  razorpay_flutter: ^1.4.0
+  chewie: ^1.11.3
+  permission_handler: ^12.0.0+1
+  media_kit: ^1.2.0
+  ffmpeg_kit_flutter_new: ^1.4.1
+  mime: ^2.0.0
+  flutter_background_service: ^5.1.0
+  flutter_background_service_android: ^6.3.0
+  dio: ^5.8.0+1
+  flutter_isolate: ^2.1.0
+
+dev_dependencies:
+  rename: ^3.0.2
+  flutter_launcher_icons: ^0.14.3
+  # The following line 'flutter_lints' activates a set of recommended lints for Flutter apps,
+  # packages, and plugins designed to encourage good coding practices.
+#  flutter_lints: ^5.0.0
+  flutter_test:
+    sdk: flutter
+
+# APP ICON - public/app_icon/icon.png
+# Build icons: "dart run flutter_launcher_icons"
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "public/app_icon/icon.png"
+  remove_alpha_ios: true
+
+# RENAME YOUR PROJECT
+# flutter pub run rename setAppName --targets ios,android --value "YourAppName"
+
+flutter:
+
+  # The following line ensures that the Material Icons font is
+  # included with your application, so that you can use the icons in
+  # the material Icons class.
+  uses-material-design: true
+
+  # To add assets to your application, add an assets section, like this:
+  assets:
+    - public/fonts/
+    - public/images/
+    - public/app_icon/
+    - lang/
+    - .env
+  fonts:
+    - family: Lato
+      fonts:
+        - asset: public/fonts/Lato/Lato-Thin.ttf
+          weight: 100
+        - asset: public/fonts/Lato/Lato-ThinItalic.ttf
+          weight: 100
+          style: italic
+        - asset: public/fonts/Lato/Lato-Light.ttf
+          weight: 300
+        - asset: public/fonts/Lato/Lato-LightItalic.ttf
+          weight: 300
+          style: italic
+        - asset: public/fonts/Lato/Lato-Regular.ttf
+          weight: 400
+        - asset: public/fonts/Lato/Lato-Italic.ttf
+          weight: 400
+          style: italic
+        - asset: public/fonts/Lato/Lato-Bold.ttf
+          weight: 700
+        - asset: public/fonts/Lato/Lato-BoldItalic.ttf
+          weight: 700
+          style: italic
+        - asset: public/fonts/Lato/Lato-Black.ttf
+          weight: 900
+        - asset: public/fonts/Lato/Lato-BlackItalic.ttf
+          weight: 900
+          style: italic
+
