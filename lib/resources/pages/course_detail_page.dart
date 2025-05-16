@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_app/app/models/course.dart';
 import 'package:flutter_app/resources/pages/enrollment_plan_page.dart';
@@ -12,6 +13,7 @@ import '../../app/networking/course_api_service.dart';
 import '../../app/networking/purchase_api_service.dart';
 import '../../app/services/video_service.dart';
 import 'course_curriculum_page.dart';
+import 'signin_page.dart';
 
 class CourseDetailPage extends NyStatefulWidget {
   static RouteView path = ("/course-detail", (_) => CourseDetailPage());
@@ -27,10 +29,55 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
   bool _isInWishlist = false;
   bool _isEnrolled = false;
   bool _isLoadingWishlist = false;
+  bool _isInitializing = true; // Added to track initialization state
+
+  // Total duration calculation
+  String _totalDuration = "- minutes";
+
+  // Download tracking
+  StreamSubscription? _downloadProgressSubscription;
 
   final CourseApiService _courseApiService = CourseApiService();
   final PurchaseApiService _purchaseApiService = PurchaseApiService();
   final VideoService _videoService = VideoService();
+
+  // Scroll controller
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+
+    // Listen for download progress updates
+    // _subscribeToDownloadProgress();
+  }
+
+  // Subscribe to download progress updates
+  // void _subscribeToDownloadProgress() {
+  //   _downloadProgressSubscription =
+  //       _videoService.progressStream.listen((update) {
+  //     // CRITICAL: Always check if widget is still mounted before calling setState
+  //     if (!mounted) return;
+
+  //     setState(() {
+  //       // The update happens in VideoService, we just need to refresh the UI
+  //     });
+  //   });
+  // }
+
+  @override
+  void dispose() {
+    // Cancel download progress subscription
+    if (_downloadProgressSubscription != null) {
+      _downloadProgressSubscription!.cancel();
+      _downloadProgressSubscription = null;
+    }
+
+    // Dispose of scroll controller
+    _scrollController.dispose();
+
+    super.dispose();
+  }
 
   @override
   boot() async {
@@ -63,25 +110,108 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
           // Convert course ID to int for API calls
           int courseId = courseDetail!.id;
 
-          // Load real data from API in parallel for better performance
+          // Load each data type separately for better error handling
+          // We use Future.microtask to allow the UI to update between each task
+
+          // Load curriculum items first - most important
+          await _loadCourseCurriculum(courseId).catchError((e) {
+            print('Error loading curriculum: $e');
+            // Set empty list on error
+            curriculumItems = [];
+          });
+
+          // Signal that the curriculum is loaded
+          if (mounted) {
+            setLoading(false, name: 'curriculum');
+            // Calculate total duration once curriculum is loaded
+            _calculateTotalDuration();
+          }
+
+          // Load objectives next
+          await _loadCourseObjectives(courseId).catchError((e) {
+            print('Error loading objectives: $e');
+            objectives = [];
+          });
+
+          if (mounted) {
+            setLoading(false, name: 'objectives');
+          }
+
+          // Load requirements next
+          await _loadCourseRequirements(courseId).catchError((e) {
+            print('Error loading requirements: $e');
+            requirements = [];
+          });
+
+          if (mounted) {
+            setLoading(false, name: 'requirements');
+          }
+
+          // Load user-specific data in parallel
           await Future.wait([
-            _loadCourseCurriculum(courseId),
-            _loadCourseObjectives(courseId),
-            _loadCourseRequirements(courseId),
             _checkWishlistStatus(),
             _checkEnrollmentStatus(),
-          ]);
-        } catch (e) {
-          NyLogger.error('Error initializing course detail: $e');
-          showToastDanger(description: "Failed to load course details: $e");
-        } finally {
+          ]).catchError((e) {
+            print('Error loading user data: $e');
+          });
+
+          // Mark initialization as complete
+          _isInitializing = false;
+
           // Complete all loading indicators
-          setLoading(false, name: 'course_detail');
-          setLoading(false, name: 'curriculum');
-          setLoading(false, name: 'objectives');
-          setLoading(false, name: 'requirements');
+          if (mounted) {
+            setLoading(false, name: 'course_detail');
+          }
+        } catch (e) {
+          print('Error initializing course detail: $e');
+          showToastDanger(description: "Failed to load course details");
+
+          // Complete loading indicators even on error
+          if (mounted) {
+            setLoading(false, name: 'course_detail');
+            setLoading(false, name: 'curriculum');
+            setLoading(false, name: 'objectives');
+            setLoading(false, name: 'requirements');
+          }
         }
       };
+
+  // Calculate total duration from curriculum items
+  void _calculateTotalDuration() {
+    try {
+      int totalSeconds = 0;
+      for (var item in curriculumItems) {
+        if (item.containsKey('duration') && item['duration'] != null) {
+          String duration = item['duration'].toString();
+          List<String> parts = duration.split(':');
+          if (parts.length == 2) {
+            try {
+              int minutes = int.parse(parts[0]);
+              int seconds = int.parse(parts[1]);
+              totalSeconds += (minutes * 60) + seconds;
+            } catch (e) {
+              // Skip invalid durations
+              print('Error parsing duration: $e');
+            }
+          }
+        }
+      }
+
+      // Format total duration
+      int hours = totalSeconds ~/ 3600;
+      int minutes = (totalSeconds % 3600) ~/ 60;
+
+      setState(() {
+        _totalDuration =
+            hours > 0 ? "$hours hours $minutes minutes" : "$minutes minutes";
+      });
+    } catch (e) {
+      print('Error calculating total duration: $e');
+      setState(() {
+        _totalDuration = "- minutes";
+      });
+    }
+  }
 
   Future<void> _loadCourseCurriculum(int courseId) async {
     try {
@@ -89,9 +219,10 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
       // Sort by order field
       curriculumItems.sort((a, b) => a['order'].compareTo(b['order']));
     } catch (e) {
-      NyLogger.error('Error loading curriculum: $e');
+      print('Error loading curriculum: $e');
       // Set empty list on error
       curriculumItems = [];
+      rethrow; // Rethrow to indicate this operation failed
     }
   }
 
@@ -99,9 +230,10 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
     try {
       objectives = await _courseApiService.getCourseObjectives(courseId);
     } catch (e) {
-      NyLogger.error('Error loading objectives: $e');
+      print('Error loading objectives: $e');
       // Set empty list on error
       objectives = [];
+      rethrow; // Rethrow to indicate this operation failed
     }
   }
 
@@ -109,9 +241,10 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
     try {
       requirements = await _courseApiService.getCourseRequirements(courseId);
     } catch (e) {
-      NyLogger.error('Error loading requirements: $e');
+      print('Error loading requirements: $e');
       // Set empty list on error
       requirements = [];
+      rethrow; // Rethrow to indicate this operation failed
     }
   }
 
@@ -128,7 +261,8 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
         });
       }
     } catch (e) {
-      NyLogger.error('Error checking wishlist status: $e');
+      print('Error checking wishlist status: $e');
+      rethrow; // Rethrow to indicate this operation failed
     }
   }
 
@@ -144,7 +278,8 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
         });
       }
     } catch (e) {
-      NyLogger.error('Error checking enrollment status: $e');
+      print('Error checking enrollment status: $e');
+      rethrow; // Rethrow to indicate this operation failed
     }
   }
 
@@ -155,7 +290,7 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
     bool isAuthenticated = await Auth.isAuthenticated();
     if (!isAuthenticated) {
       confirmAction(() {
-        routeTo('/login');
+        routeTo(SigninPage.path);
       },
           title: trans("You need to login to save courses to your wishlist."),
           confirmText: trans("Login"),
@@ -207,12 +342,14 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
       });
       updateState('/wishlist_tab', data: "refresh_wishlist");
     } catch (e) {
-      NyLogger.error('Error toggling wishlist: $e');
+      print('Error toggling wishlist: $e');
       showToastDanger(description: trans("Failed to update wishlist"));
     } finally {
-      setState(() {
-        _isLoadingWishlist = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoadingWishlist = false;
+        });
+      }
     }
   }
 
@@ -221,7 +358,7 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
 
     // If already enrolled, just show curriculum
     if (_isEnrolled) {
-      routeTo(CourseCurriculumPage.path, data: {'course': courseDetail});
+      _navigateToCurriculum();
       return;
     }
 
@@ -229,7 +366,7 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
     bool isAuthenticated = await Auth.isAuthenticated();
     if (!isAuthenticated) {
       confirmAction(() {
-        routeTo('/login');
+        routeTo(SigninPage.path);
       },
           title: trans("You need to login to enroll in courses."),
           confirmText: trans("Login"),
@@ -237,14 +374,27 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
       return;
     }
 
+    // Show loading indicator
+    showLoadingDialog(trans("Checking subscription..."));
+
     // Check if user has an active subscription
     try {
       bool hasActiveSubscription =
           await _purchaseApiService.hasActiveSubscription();
 
+      // Hide loading dialog
+      Navigator.pop(context);
+
       if (hasActiveSubscription) {
+        // Show enrolling progress
+        showLoadingDialog(trans("Enrolling..."));
+
         // User already has subscription, directly enroll
         await _courseApiService.enrollInCourse(courseDetail!.id);
+
+        // Hide loading dialog
+        if (mounted) Navigator.pop(context);
+
         showToastSuccess(description: trans("Successfully enrolled in course"));
         setState(() {
           _isEnrolled = true;
@@ -255,16 +405,49 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
         updateState('/home_tab', data: "refresh_enrollments");
 
         // Navigate to curriculum
-        routeTo(CourseCurriculumPage.path, data: {'course': courseDetail});
+        _navigateToCurriculum();
       } else {
         // User needs a subscription, navigate to subscription page
         routeTo(EnrollmentPlanPage.path, data: {'course': courseDetail});
       }
     } catch (e) {
-      NyLogger.error('Error handling enrollment: $e');
+      // Hide loading dialog if still showing
+      if (mounted && Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
+
+      print('Error handling enrollment: $e');
       showToastDanger(
           description: trans("An error occurred, please try again"));
     }
+  }
+
+  // Helper method to navigate to curriculum page
+  void _navigateToCurriculum() {
+    // Use Future.microtask to prevent UI blocking
+    Future.microtask(() {
+      routeTo(CourseCurriculumPage.path,
+          data: {'course': courseDetail, 'curriculum': curriculumItems});
+    });
+  }
+
+  // Show loading dialog
+  void showLoadingDialog(String message) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          content: Row(
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(width: 20),
+              Text(message),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   void _promptVideoDownload(int index) async {
@@ -272,7 +455,7 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
     bool isAuthenticated = await Auth.isAuthenticated();
     if (!isAuthenticated) {
       confirmAction(() {
-        routeTo('/login');
+        routeTo(SigninPage.path);
       },
           title: trans("You need to login to watch videos"),
           confirmText: trans("Login"),
@@ -286,28 +469,21 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
         _handleEnrollment();
       },
           title: trans("Enrollment Required"),
-          // description: trans("You need to enroll in this course to watch videos"),
+          // message:
+          //     trans("You need to enroll in this course to access the videos."),
           confirmText: trans("Enroll Now"),
           dismissText: trans("Cancel"));
       return;
     }
 
-    // Prompt to view curriculum page where videos can be downloaded
-    confirmAction(() {
-      routeTo(CourseCurriculumPage.path,
-          data: {'course': courseDetail, 'curriculum': curriculumItems});
-    },
-        title: trans("Download Required"),
-        // description: trans("You need to download the video before watching it"),
-        confirmText: trans("Go to Curriculum"),
-        dismissText: trans("Cancel"));
+    // If enrolled, navigate to curriculum page
+    _navigateToCurriculum();
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget view(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.white,
-      // Use AppBar for the static back button
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
@@ -317,34 +493,56 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
           onPressed: () => pop(),
         ),
         title: SizedBox(), // Empty title
+        // Add a refresh button to the app bar
+        actions: [
+          IconButton(
+            icon: Icon(Icons.refresh, color: Colors.black),
+            onPressed: _isInitializing
+                ? null // Disable when initializing
+                : () {
+                    // Refresh the page data
+                    setLoading(true, name: 'course_detail');
+                    init();
+                  },
+          ),
+        ],
       ),
       body: afterLoad(
         loadingKey: 'course_detail',
-        child: () => SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Hero Image with CachedNetworkImage for better loading
-              _buildCourseImage(),
+        child: () => RefreshIndicator(
+          onRefresh: () async {
+            // Pull-to-refresh functionality
+            setLoading(true, name: 'course_detail');
+            await init();
+          },
+          child: SingleChildScrollView(
+            controller: _scrollController,
+            physics: AlwaysScrollableScrollPhysics(), // Always scrollable
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Hero Image with CachedNetworkImage for better loading
+                _buildCourseImage(),
 
-              // Course Title and Subtitle
-              _buildCourseInfo(),
+                // Course Title and Subtitle
+                _buildCourseInfo(),
 
-              // Objectives/What you'll achieve
-              _buildAchievementsSection(),
+                // Objectives/What you'll achieve
+                _buildAchievementsSection(),
 
-              // Course Curriculum - with white background and box shadow
-              _buildCurriculumSection(),
+                // Course Curriculum - with white background and box shadow
+                _buildCurriculumSection(),
 
-              // Requirements - with white background and box shadow
-              _buildRequirementsSection(),
+                // Requirements - with white background and box shadow
+                _buildRequirementsSection(),
 
-              // Bottom action button
-              _buildBottomAction(),
+                // Bottom action button
+                _buildBottomAction(),
 
-              // Add some bottom padding for safety
-              SizedBox(height: 20),
-            ],
+                // Add some bottom padding for safety
+                SizedBox(height: 20),
+              ],
+            ),
           ),
         ),
       ),
@@ -445,28 +643,51 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
           ),
           SizedBox(height: 24),
 
-          // Enroll Button
-          Container(
-            width: double.infinity,
-            height: 50,
-            child: ElevatedButton(
-              onPressed: _handleEnrollment,
-              child: Text(
-                _isEnrolled ? trans('View Course') : trans('Enroll Now'),
-                style: TextStyle(
-                  color: Colors.black,
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
+          // Only show Enroll Button if not enrolled
+          if (!_isEnrolled)
+            Container(
+              width: double.infinity,
+              height: 50,
+              child: ElevatedButton(
+                onPressed: _handleEnrollment,
+                child: Text(
+                  trans('Enroll Now'),
+                  style: TextStyle(
+                    color: Colors.black,
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Color(0xFFEFE458), // Yellow
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(25),
+                  ),
                 ),
               ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Color(0xFFEFE458), // Yellow
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(25),
+            )
+          else
+            Container(
+              width: double.infinity,
+              height: 50,
+              child: ElevatedButton(
+                onPressed: _navigateToCurriculum,
+                child: Text(
+                  trans('View Course'),
+                  style: TextStyle(
+                    color: Colors.black,
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Color(0xFFEFE458), // Yellow
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(25),
+                  ),
                 ),
               ),
             ),
-          ),
           SizedBox(height: 12),
 
           // Wishlist Button
@@ -585,7 +806,7 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
             ),
             SizedBox(height: 8),
             Text(
-              "${curriculumItems.length} ${trans('videos')} • - hours - minutes total length",
+              "${curriculumItems.length} ${trans('videos')} • $_totalDuration total length",
               style: TextStyle(
                 fontSize: 10,
                 color: Colors.black,
@@ -626,32 +847,30 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
               ),
             SizedBox(height: 10),
 
-            // Always show "See all Videos" button regardless of item count
-            GestureDetector(
-              onTap: () {
-                routeTo(CourseCurriculumPage.path, data: {
-                  'course': courseDetail,
-                  'curriculum': curriculumItems
-                });
-              },
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    trans('See all Videos'),
-                    style: TextStyle(
-                      color: Color(0xFFE5A200), // Yellow color
-                      fontSize: 14,
+            // Only show "See all Videos" button if user is enrolled or if there are more than 5 videos
+            if (_isEnrolled || curriculumItems.length > 5)
+              GestureDetector(
+                onTap: () {
+                  _navigateToCurriculum();
+                },
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      trans('See all Videos'),
+                      style: TextStyle(
+                        color: Color(0xFFE5A200), // Yellow color
+                        fontSize: 14,
+                      ),
                     ),
-                  ),
-                  Icon(
-                    Icons.arrow_forward,
-                    size: 16,
-                    color: Color(0xFFE5A200), // Matching icon color
-                  ),
-                ],
+                    Icon(
+                      Icons.arrow_forward,
+                      size: 16,
+                      color: Color(0xFFE5A200), // Matching icon color
+                    ),
+                  ],
+                ),
               ),
-            ),
           ],
         ),
       ),
@@ -718,7 +937,8 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
             width: 150,
             height: 50,
             child: ElevatedButton(
-              onPressed: _handleEnrollment,
+              onPressed:
+                  _isEnrolled ? _navigateToCurriculum : _handleEnrollment,
               child: Text(
                 _isEnrolled ? trans('View Course') : trans('Enroll Now'),
                 style: TextStyle(

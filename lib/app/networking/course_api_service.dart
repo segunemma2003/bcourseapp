@@ -229,6 +229,74 @@ class CourseApiService extends NyApiService {
         });
   }
 
+  Future<dynamic> purchaseCourse({
+    required int courseId,
+    required int planId,
+    required String razorpayPaymentId,
+    required String razorpayOrderId,
+    required String razorpaySignature,
+    int? paymentCardId,
+  }) async {
+    // Get auth token
+    final authToken = await backpackRead('auth_token');
+    if (authToken == null) {
+      throw Exception("Not logged in");
+    }
+
+    return await network(
+        request: (request) => request.post(
+              "/payments/purchase-course/",
+              data: {
+                "course_id": courseId,
+                "plan_id": planId,
+                "razorpay_payment_id": razorpayPaymentId,
+                "razorpay_order_id": DateTime.now().microsecondsSinceEpoch,
+                "razorpay_signature": 'auto_verify',
+                // if (paymentCardId != null) "payment_card_id": paymentCardId,
+              },
+            ),
+        headers: {
+          "Authorization": "Token ${authToken}",
+          "Content-Type": "application/json",
+        },
+        handleSuccess: (Response response) async {
+          // Invalidate relevant caches after successful purchase
+          await Future.wait([
+            storageDelete('enrolled_courses'),
+            storageDelete('course_details_$courseId'),
+            storageDelete('course_complete_details_$courseId'),
+            storageDelete(
+                'wishlist'), // User might have had this course in wishlist
+          ]);
+
+          NyLogger.info('Course purchased successfully: $courseId');
+          return response.data;
+        },
+        handleFailure: (DioException dioError) {
+          // Parse error response for better error handling
+          String errorMessage = "Failed to purchase course";
+
+          if (dioError.response?.data != null) {
+            try {
+              final errorData = dioError.response!.data;
+              if (errorData is Map<String, dynamic>) {
+                if (errorData.containsKey('error')) {
+                  errorMessage = errorData['error'].toString();
+                } else if (errorData.containsKey('message')) {
+                  errorMessage = errorData['message'].toString();
+                } else if (errorData.containsKey('details')) {
+                  errorMessage = errorData['details'].toString();
+                }
+              }
+            } catch (e) {
+              NyLogger.error('Error parsing purchase error response: $e');
+            }
+          }
+
+          throw Exception("$errorMessage: ${dioError.message}");
+        });
+  }
+
   /// Get complete course details (including enrollment info)
   Future<dynamic> getCompleteDetails(int courseId,
       {bool refresh = false}) async {
@@ -281,13 +349,13 @@ class CourseApiService extends NyApiService {
     // Create a cache key
     final cacheKey = 'enrolled_courses';
 
-    // Check cache first if not forcing refresh
-    if (!refresh) {
-      final cached = await storageRead(cacheKey);
-      if (cached != null) {
-        return cached;
-      }
-    }
+    // // Check cache first if not forcing refresh
+    // if (!refresh) {
+    //   final cached = await storageRead(cacheKey);
+    //   if (cached != null) {
+    //     return cached;
+    //   }
+    // }
 
     return await network(
         request: (request) => request.get("/enrollments/"),

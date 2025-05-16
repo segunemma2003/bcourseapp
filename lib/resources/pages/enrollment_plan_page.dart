@@ -1,9 +1,11 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:nylo_framework/nylo_framework.dart';
+import 'package:razorpay_flutter/razorpay_flutter.dart';
 
 import '../../app/models/course.dart';
 import '../../app/models/enrollment.dart';
+import '../../app/networking/course_api_service.dart';
 import '../../app/networking/purchase_api_service.dart';
 import '../../utils/enrollment_data.dart';
 
@@ -18,6 +20,28 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
   Course? course;
   int selectedPlanIndex = 0; // Default to first plan (PRO)
   List<SubscriptionPlan> subscriptionPlans = [];
+  bool _isProcessingPayment = false;
+
+  // Initialize Razorpay
+  late Razorpay _razorpay;
+
+  @override
+  void initState() {
+    super.initState();
+
+    // Initialize Razorpay
+    _razorpay = Razorpay();
+    _razorpay.on(Razorpay.EVENT_PAYMENT_SUCCESS, _handlePaymentSuccess);
+    _razorpay.on(Razorpay.EVENT_PAYMENT_ERROR, _handlePaymentError);
+    _razorpay.on(Razorpay.EVENT_EXTERNAL_WALLET, _handleExternalWallet);
+  }
+
+  @override
+  void dispose() {
+    // Clean up Razorpay
+    _razorpay.clear();
+    super.dispose();
+  }
 
   @override
   get init => () async {
@@ -70,7 +94,14 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
           icon: Icon(Icons.arrow_back, color: Colors.black),
           onPressed: () => Navigator.pop(context),
         ),
-        title: SizedBox(), // Empty title
+        title: Text(
+          trans("Choose a Plan"),
+          style: TextStyle(
+            color: Colors.black,
+            fontSize: 16,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
       ),
       body: afterLoad(
         child: () => SingleChildScrollView(
@@ -180,8 +211,9 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      "",
-                      // enrollmentPlans[selectedPlanIndex]['price'],
+                      subscriptionPlans.isNotEmpty
+                          ? "₹${subscriptionPlans[selectedPlanIndex].amount}"
+                          : "",
                       style: TextStyle(
                         fontSize: 20,
                         fontWeight: FontWeight.bold,
@@ -191,18 +223,23 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
                       width: 150,
                       height: 50,
                       child: ElevatedButton(
-                        onPressed: () {
-                          // Handle enrollment with selected plan
-                          _completeEnrollment();
-                        },
-                        child: Text(
-                          'Enroll Now',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.black,
-                          ),
-                        ),
+                        // style:ButtonStyle),
+                        onPressed:
+                            _isProcessingPayment ? null : _startPaymentProcess,
+                        child: _isProcessingPayment
+                            ? CircularProgressIndicator(
+                                valueColor:
+                                    AlwaysStoppedAnimation<Color>(Colors.amber),
+                                strokeWidth: 3,
+                              )
+                            : Text(
+                                'Enroll Now',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.black,
+                                ),
+                              ),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Color(0xFFEFE458), // Yellow
                           shape: RoundedRectangleBorder(
@@ -348,25 +385,205 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
     );
   }
 
-  void _completeEnrollment() {
-    // Handle enrollment with selected plan
-    // You could navigate to a payment page or confirmation page
+  void _startPaymentProcess() {
+    if (subscriptionPlans.isEmpty ||
+        selectedPlanIndex >= subscriptionPlans.length) {
+      showToastDanger(description: trans("No plan selected"));
+      return;
+    }
+
+    setState(() {
+      _isProcessingPayment = true;
+    });
+
+    // Get selected plan
+    SubscriptionPlan plan = subscriptionPlans[selectedPlanIndex];
+    print(double.parse(plan.amount) * 100);
+    print(getEnv('RAZORPAY_KEY_ID'));
+
+    // Get user info
+    _getUserInfo().then((userInfo) {
+      // Create Razorpay options
+      var options = {
+        'key': "rzp_test_jVs3DvUw9Q14gj",
+        'amount': (double.parse(plan.amount) * 100)
+            .toString(), // Razorpay expects amount in paise
+        'name': 'Course Enrollment',
+        'description': 'Enrollment for ${course!.title}',
+        'prefill': {
+          'email': userInfo['email'] ?? '',
+          'name': userInfo['name'] ?? '',
+          "contact": userInfo['phone'] ?? '',
+        },
+        'notes': {
+          'course_id': course!.id.toString(),
+          'plan_id': plan.id.toString(),
+        },
+        'theme': {
+          'color': '#EFE458', // Yellow color
+        }
+      };
+
+      try {
+        _razorpay.open(options);
+      } catch (e) {
+        setState(() {
+          _isProcessingPayment = false;
+        });
+        showToastDanger(
+            description: "Payment initialization failed: ${e.toString()}");
+      }
+    }).catchError((e) {
+      setState(() {
+        _isProcessingPayment = false;
+      });
+      showToastDanger(description: "Failed to get user info: ${e.toString()}");
+    });
+  }
+
+  // Get user info for Razorpay prefill
+  Future<Map<String, dynamic>> _getUserInfo() async {
+    try {
+      final userData = await Auth.data();
+
+      return {
+        'name': userData['full_name'] ?? '',
+        'email': userData['email'] ?? '',
+        'phone': userData['phone_number'] ?? '',
+      };
+    } catch (e) {
+      return {};
+    }
+  }
+
+  void _handlePaymentSuccess(PaymentSuccessResponse response) async {
+    print(response);
+    // Get payment details from Razorpay response
+
+    String paymentId = response.paymentId ?? '';
+    String orderId = response.orderId ?? '';
+    String signature = response.signature ?? "";
+    print(paymentId);
+    print(orderId);
+    print(signature);
+
+    try {
+      // Show processing dialog
+      showLoadingDialog(trans("Processing enrollment..."));
+
+      // Get selected plan
+      SubscriptionPlan plan = subscriptionPlans[selectedPlanIndex];
+
+      // Create enrollment with the payment reference code
+      var courseApiService = CourseApiService();
+      await courseApiService.purchaseCourse(
+          courseId: course!.id,
+          planId: plan.id,
+          razorpayPaymentId: paymentId,
+          razorpayOrderId: orderId,
+          razorpaySignature: signature);
+
+      // Hide processing dialog
+      if (mounted && Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
+
+      // Notify other screens about the enrollment
+      updateState('/search_tab', data: "refresh_courses");
+      updateState('/home_tab', data: "refresh_enrollments");
+
+      // Show success dialog
+      await showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (BuildContext context) {
+          return AlertDialog(
+            title: Text("Enrollment Successful"),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(
+                  Icons.check_circle_outline,
+                  color: Colors.green,
+                  size: 60,
+                ),
+                SizedBox(height: 16),
+                Text(
+                  "You have successfully enrolled in ${course!.title}.",
+                  style: TextStyle(fontSize: 16),
+                ),
+                SizedBox(height: 8),
+                Text(
+                  "Transaction ID: ${paymentId}",
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                child: Text("View Course"),
+                onPressed: () {
+                  // Navigate to home tab with index 3
+                  Navigator.of(context).popUntil((route) => route.isFirst);
+                  updateState('/app_layout', data: {"index": 3});
+                },
+              ),
+            ],
+          );
+        },
+      );
+    } catch (e) {
+      // Hide processing dialog if showing
+      if (mounted && Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
+
+      // Show error message
+      showToastDanger(description: "Enrollment failed: ${e.toString()}");
+    } finally {
+      setState(() {
+        _isProcessingPayment = false;
+      });
+    }
+  }
+
+  void _handlePaymentError(PaymentFailureResponse response) {
+    setState(() {
+      _isProcessingPayment = false;
+    });
+
+    // Show error message
+    showToastDanger(
+        description: "Payment failed: ${response.message ?? 'Unknown error'}");
+  }
+
+  void _handleExternalWallet(ExternalWalletResponse response) {
+    setState(() {
+      _isProcessingPayment = false;
+    });
+
+    // Show info message
+    showToastInfo(
+        description: "External wallet selected: ${response.walletName ?? ''}");
+  }
+
+  // Helper to show loading dialog
+  void showLoadingDialog(String message) {
     showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (BuildContext context) {
         return AlertDialog(
-          title: Text("Enrollment Successful"),
-          content: Text(
-              "You have successfully enrolled in ${course!.title} with the ${subscriptionPlans[selectedPlanIndex].name} plan."),
-          actions: [
-            TextButton(
-              child: Text("OK"),
-              onPressed: () {
-                Navigator.of(context).pop();
-                Navigator.of(context).pop(); // Go back to course detail
-              },
-            ),
-          ],
+          content: Row(
+            children: [
+              CircularProgressIndicator(
+                color: Colors.amber,
+              ),
+              SizedBox(width: 20),
+              Text(message),
+            ],
+          ),
         );
       },
     );

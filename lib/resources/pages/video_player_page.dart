@@ -48,17 +48,8 @@ class _VideoPlayerPageState extends NyPage<VideoPlayerPage>
     // Register this widget as an observer to listen for app lifecycle changes
     WidgetsBinding.instance.addObserver(this);
 
-    // Allow all orientations right from the start
+    // Allow all orientations
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-    SystemChrome.setPreferredOrientations([
-      DeviceOrientation.portraitUp,
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
-    ]);
-  }
-
-  // Function to set all orientations
-  void _setAllOrientations() {
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,
       DeviceOrientation.landscapeLeft,
@@ -162,7 +153,6 @@ class _VideoPlayerPageState extends NyPage<VideoPlayerPage>
             ),
           );
         },
-        // Listen for fullscreen changes
       );
 
       // Add listener for fullscreen changes
@@ -193,28 +183,33 @@ class _VideoPlayerPageState extends NyPage<VideoPlayerPage>
         NyLogger.info('Entered fullscreen mode');
         _forceLandscape();
       } else {
-        // Exited fullscreen - allow all orientations, but device will likely return to portrait
+        // Exited fullscreen - allow all orientations
         NyLogger.info('Exited fullscreen mode');
         _setAllOrientations();
       }
     }
   }
 
+  void _setAllOrientations() {
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+  }
+
   // Force landscape orientation
   void _forceLandscape() {
-    // Use a short delay to ensure iOS has time to process the request
     Future.delayed(Duration(milliseconds: 100), () {
       SystemChrome.setPreferredOrientations([
         DeviceOrientation.landscapeLeft,
         DeviceOrientation.landscapeRight,
       ]);
 
-      // On iOS, sometimes we need to explicitly request the orientation change
+      // For iOS, ensure the orientation change is applied
       if (Platform.isIOS) {
-        // This helps on iOS to force the change
         SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky)
             .then((_) {
-          // And after a short delay, we set it again to ensure it takes effect
           Future.delayed(Duration(milliseconds: 200), () {
             SystemChrome.setPreferredOrientations([
               DeviceOrientation.landscapeLeft,
@@ -226,7 +221,7 @@ class _VideoPlayerPageState extends NyPage<VideoPlayerPage>
     });
   }
 
-  // Add a method to toggle fullscreen programmatically if needed
+  // Toggle fullscreen
   void _toggleFullScreen() {
     if (_chewieController != null) {
       _chewieController!.toggleFullScreen();
@@ -251,7 +246,6 @@ class _VideoPlayerPageState extends NyPage<VideoPlayerPage>
             backgroundColor: Colors.black,
             // No AppBar for fullscreen video experience
             body: SafeArea(
-              // On iOS, sometimes we need to conditionally use SafeArea
               bottom: !_isFullScreen,
               child: Stack(
                 children: [
@@ -288,7 +282,7 @@ class _VideoPlayerPageState extends NyPage<VideoPlayerPage>
                       top: 16,
                       left: 16,
                       child: GestureDetector(
-                        onTap: () => pop(), // Use Nylo's pop method
+                        onTap: () => pop(),
                         child: Container(
                           decoration: BoxDecoration(
                             color: Colors.black.withOpacity(0.5),
@@ -300,7 +294,7 @@ class _VideoPlayerPageState extends NyPage<VideoPlayerPage>
                       ),
                     ),
 
-                  // Fullscreen toggle button (optional, as Chewie already has this control)
+                  // Fullscreen toggle button
                   if (!_isFullScreen && _isInitialized)
                     Positioned(
                       top: 16,

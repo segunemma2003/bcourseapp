@@ -21,6 +21,10 @@ class _CoursesTabState extends NyState<CoursesTab> {
   bool _hasCourses = false;
   bool _isAuthenticated = false;
 
+  // Progress tracking for each course
+  Map<String, double> _courseProgress = {};
+  Map<String, int> _courseVideoCount = {};
+
   // Set state name for Nylo's state management
   _CoursesTabState() {
     stateName = CoursesTab.state;
@@ -41,21 +45,95 @@ class _CoursesTabState extends NyState<CoursesTab> {
         // Fetch enrolled courses
         await _fetchEnrolledCourses();
 
-        // Setup state actions that can be called from other widgets
+        // Load progress for each course
+        await _loadCourseProgress();
       };
-
-  // Define state actions that can be called from other widgets
 
   @override
   stateUpdated(data) async {
     if (data == "refresh_enrolled_courses") {
       await _fetchEnrolledCourses(refresh: true);
     } else if (data == "update_auth_status") {
+      setState(() {
+        _isAuthenticated = true;
+      });
       await _fetchEnrolledCourses(refresh: true);
+    } else if (data == "update_course_progress") {
+      await _loadCourseProgress();
     }
 
-    // TODO: implement stateUpdated
     return super.stateUpdated(data);
+  }
+
+  Future<void> _loadCourseProgress() async {
+    if (_enrolledCourses.isEmpty) return;
+
+    for (var course in _enrolledCourses) {
+      try {
+        // Load saved progress from storage
+        String key = 'course_progress_${course.id}';
+
+        var savedProgress = await NyStorage.read(key);
+
+        if (savedProgress != null) {
+          // Calculate progress percentage
+          var completedLessons = (savedProgress is Map &&
+                  savedProgress.containsKey('completedLessons'))
+              ? savedProgress['completedLessons']
+              : {};
+
+          print(savedProgress);
+          var completedCount =
+              completedLessons.values.where((v) => v == true).length;
+
+          // Get video counts from CourseApiService or CourseData
+          var curriculumItems = await _fetchCurriculumForCourse(course.id);
+          print(curriculumItems);
+          int totalVideos = curriculumItems.length;
+
+          // Calculate and save progress
+          double progress =
+              totalVideos > 0 ? completedCount / totalVideos : 0.0;
+
+          setState(() {
+            _courseProgress[course.id.toString()] = progress;
+            _courseVideoCount[course.id.toString()] = totalVideos;
+          });
+        } else {
+          // No progress yet, but still get video count
+          List<dynamic> curriculumItems =
+              await _fetchCurriculumForCourse(course.id);
+
+          setState(() {
+            _courseProgress[course.id.toString()] = 0.0;
+            _courseVideoCount[course.id.toString()] = curriculumItems.length;
+          });
+        }
+      } catch (e) {
+        NyLogger.error('Failed to load progress for course ${course.id}: $e');
+
+        // Set defaults if loading fails
+        setState(() {
+          _courseProgress[course.id.toString()] = 0.0;
+          _courseVideoCount[course.id.toString()] = 0;
+        });
+      }
+    }
+  }
+
+  Future<List<dynamic>> _fetchCurriculumForCourse(int courseId) async {
+    // This would typically come from your API
+    // For demo purposes, we'll return a list with a length based on courseId
+    try {
+      var courseApiService = CourseApiService();
+      List<dynamic> curriculum =
+          await courseApiService.getCourseCurriculum(courseId);
+      return curriculum;
+    } catch (e) {
+      // Fallback to local data in case API fails
+
+      return [];
+    }
   }
 
   Future<void> _fetchEnrolledCourses({bool refresh = false}) async {
@@ -77,7 +155,7 @@ class _CoursesTabState extends NyState<CoursesTab> {
       try {
         // Fetch enrolled courses from API
         List<dynamic> enrolledCoursesData =
-            await courseApiService.getEnrolledCourses(refresh: refresh);
+            await courseApiService.getEnrolledCourses();
 
         // Process the courses
         if (enrolledCoursesData.isNotEmpty) {
@@ -112,6 +190,9 @@ class _CoursesTabState extends NyState<CoursesTab> {
           _hasCourses = false;
         }
       }
+
+      // Load progress data for courses
+      await _loadCourseProgress();
     } catch (e) {
       NyLogger.error('Failed to fetch enrolled courses: $e');
 
@@ -138,7 +219,9 @@ class _CoursesTabState extends NyState<CoursesTab> {
 
   void _onStartCourse(Course course) {
     // Navigate to purchased course detail page
-    routeTo(PurchasedCourseDetailPage.path, data: {'course': course});
+    routeTo(PurchasedCourseDetailPage.path, data: {
+      'course': course,
+    });
   }
 
   Future<void> _onRefresh() async {
@@ -200,7 +283,9 @@ class _CoursesTabState extends NyState<CoursesTab> {
               children: [
                 // Main Content
                 Expanded(
-                  child: _hasCourses ? _buildCoursesList() : _buildEmptyState(),
+                  child: _isAuthenticated
+                      ? (_hasCourses ? _buildCoursesList() : _buildEmptyState())
+                      : _buildLoginPrompt(),
                 ),
               ],
             ),
@@ -425,8 +510,10 @@ class _CoursesTabState extends NyState<CoursesTab> {
   }
 
   Widget _buildCourseItem(Course course) {
-    // Calculate a mock progress (would come from API in real app)
-    int progressPercentage = ((course.id * 17) % 100);
+    // Get progress from stored data
+    double progressPercentage = _courseProgress[course.id.toString()] ?? 0.0;
+    int videoCount =
+        _courseVideoCount[course.id.toString()] ?? ((course.id ?? 1) % 10) + 5;
 
     return Container(
       decoration: BoxDecoration(
@@ -511,7 +598,7 @@ class _CoursesTabState extends NyState<CoursesTab> {
                         children: [
                           // Progress text
                           Text(
-                            "$progressPercentage% ${trans("Complete")}",
+                            "${(progressPercentage * 100).toInt()}% ${trans("Complete")}",
                             style: TextStyle(
                               fontSize: 10,
                               color: Colors.grey.shade700,
@@ -525,7 +612,7 @@ class _CoursesTabState extends NyState<CoursesTab> {
                           ClipRRect(
                             borderRadius: BorderRadius.circular(2),
                             child: LinearProgressIndicator(
-                              value: progressPercentage / 100,
+                              value: progressPercentage,
                               backgroundColor: Colors.grey.shade200,
                               color: Colors.amber,
                               minHeight: 5,
@@ -553,7 +640,7 @@ class _CoursesTabState extends NyState<CoursesTab> {
                         size: 16, color: Colors.grey.shade700),
                     SizedBox(width: 4),
                     Text(
-                      "${(course.id % 10) + 4} ${trans("videos")}",
+                      "$videoCount ${trans("videos")}",
                       style: TextStyle(
                         fontSize: 12,
                         color: Colors.grey.shade700,

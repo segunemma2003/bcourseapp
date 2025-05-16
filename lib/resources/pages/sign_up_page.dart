@@ -494,7 +494,7 @@ class _SignUpPageState extends NyPage<SignUpPage> {
           );
 
           // Preload essential data
-          await preloadEssentialData();
+          // await preloadEssentialData();
 
           // Navigate to the main app
           routeTo(BaseNavigationHub.path,
@@ -523,7 +523,7 @@ class _SignUpPageState extends NyPage<SignUpPage> {
         );
 
         // Preload essential data
-        await preloadEssentialData();
+        // await preloadEssentialData();
 
         // Navigate to the main app
         routeTo(BaseNavigationHub.path,

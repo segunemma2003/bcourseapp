@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_app/app/models/course.dart';
+import 'package:flutter_app/resources/pages/course_detail_page.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 
 class CourseCard extends StatelessWidget {
@@ -11,7 +12,7 @@ class CourseCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: () {
-        // routeTo('course_details', data: {'course': course});
+        routeTo(CourseDetailPage.path, data: {'course': course});
       },
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

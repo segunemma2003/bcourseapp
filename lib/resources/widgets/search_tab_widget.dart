@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_app/resources/pages/course_detail_page.dart';
+import 'package:flutter_app/resources/pages/purchased_course_detail_page.dart';
 import 'package:flutter_app/resources/pages/signin_page.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 
@@ -53,6 +54,7 @@ class _SearchTabState extends NyState<SearchTab> {
 
         // Initialize data
         await _fetchCourses();
+        await _fetchEnrolledCourses();
 
         // Listen for text changes
         _searchController.addListener(() {
@@ -61,6 +63,75 @@ class _SearchTabState extends NyState<SearchTab> {
           }
         });
       };
+
+  Future<void> _fetchEnrolledCourses({bool refresh = false}) async {
+    setLoading(true, name: 'fetch_enrolled_courses');
+
+    try {
+      // If not authenticated, we can't fetch enrolled courses
+      if (!_isAuthenticated) {
+        setState(() {
+          _enrolledCourses = [];
+        });
+        return;
+      }
+
+      // Use the CourseApiService to fetch enrolled courses
+      var courseApiService = CourseApiService();
+
+      try {
+        // Fetch enrolled courses from API
+        List<dynamic> enrolledCoursesData =
+            await courseApiService.getEnrolledCourses();
+
+        // Process the courses
+        if (enrolledCoursesData.isNotEmpty) {
+          _enrolledCourses = enrolledCoursesData
+              .map((data) => Course.fromJson(data['course']))
+              .toList();
+        } else {
+          _enrolledCourses = [];
+        }
+      } catch (e) {
+        // If API fails, check local storage as fallback
+        NyLogger.error('API Error: $e. Checking local storage...');
+
+        List<String>? enrolledCourseIds =
+            await NyStorage.read('enrolled_course_ids');
+
+        if (enrolledCourseIds != null && enrolledCourseIds.isNotEmpty) {
+          // Fetch all courses to find the enrolled ones
+          List<dynamic> allCoursesData = await courseApiService.getAllCourses();
+          List<Course> allCourses =
+              allCoursesData.map((data) => Course.fromJson(data)).toList();
+
+          // Filter to get only enrolled courses
+          _enrolledCourses = allCourses
+              .where((course) => enrolledCourseIds.contains(course.id))
+              .toList();
+        } else {
+          _enrolledCourses = [];
+        }
+      }
+
+      // Load progress data for courses
+    } catch (e) {
+      NyLogger.error('Failed to fetch enrolled courses: $e');
+
+      showToast(
+          title: trans("Error"),
+          description: trans("Failed to load your courses"),
+          icon: Icons.error_outline,
+          style: ToastNotificationStyleType.danger);
+
+      // Reset state on error
+      setState(() {
+        _enrolledCourses = [];
+      });
+    } finally {
+      setLoading(false, name: 'fetch_enrolled_courses');
+    }
+  }
 
   // Define state actions that can be called from other widgets
   @override
@@ -293,7 +364,7 @@ class _SearchTabState extends NyState<SearchTab> {
     bool isEnrolled = _enrolledCourses.any((c) => c.id == course.id);
 
     if (isEnrolled) {
-      routeTo(CourseDetailPage.path, data: {'course': course});
+      routeTo(PurchasedCourseDetailPage.path, data: {'course': course});
       return;
     }
 
@@ -740,7 +811,7 @@ class _SearchTabState extends NyState<SearchTab> {
                         ),
                       ),
                       child: Text(
-                        isEnrolled ? trans("View Course") : trans("Enroll Now"),
+                        isEnrolled ? trans("View Course") : trans('Enroll Now'),
                         style: TextStyle(
                           color: isEnrolled ? Colors.black87 : Colors.white,
                           fontSize: 12,

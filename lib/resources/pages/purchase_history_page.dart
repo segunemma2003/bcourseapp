@@ -16,6 +16,7 @@ class PurchaseHistoryPage extends NyStatefulWidget {
 class _PurchaseHistoryPageState extends NyPage<PurchaseHistoryPage> {
   List<PurchaseHistory> _purchaseHistory = [];
   bool _isAuthenticated = false;
+  final PurchaseApiService _purchaseApiService = PurchaseApiService();
 
   @override
   LoadingStyle get loadingStyle => LoadingStyle.skeletonizer(
@@ -55,64 +56,82 @@ class _PurchaseHistoryPageState extends NyPage<PurchaseHistoryPage> {
       };
 
   Future<void> _fetchPurchaseHistory({bool refresh = false}) async {
-    // Use Nylo's loading state management with skeletonizer
     setLoading(true, name: 'fetch_purchase_history');
 
     try {
-      // Use the PurchaseApiService
-      var purchaseApiService = PurchaseApiService();
-
       // Fetch purchase history data
       List<dynamic> purchaseData = [];
 
       try {
         // Get purchase history from API
         purchaseData =
-            await purchaseApiService.getPurchaseHistory(refresh: refresh);
+            await _purchaseApiService.getPurchaseHistory(refresh: refresh);
       } catch (e) {
-        // Handle error
         NyLogger.error('Error fetching purchase history: $e');
         throw e;
       }
 
       // Parse data into model
-      _purchaseHistory =
-          purchaseData.map((data) => PurchaseHistory.fromJson(data)).toList();
+      List<PurchaseHistory> parsedPurchases = [];
+      for (var data in purchaseData) {
+        try {
+          parsedPurchases.add(PurchaseHistory.fromJson(data));
+        } catch (e) {
+          // Log the problematic data
+          NyLogger.error('Error parsing purchase data: $e');
+          NyLogger.error('Problematic data: $data');
+          // Continue to next item
+        }
+      }
 
-      // Optional: Store in local storage for offline access
+      setState(() {
+        _purchaseHistory = parsedPurchases;
+      });
+
+      // Store in local storage
       await storageSave(PurchaseHistory.key, purchaseData);
     } catch (e) {
-      NyLogger.error('Error fetching purchase history: $e');
+      NyLogger.error('Error in _fetchPurchaseHistory: $e');
 
       // Try to load from local storage as fallback
       try {
         final cachedData = await storageRead(PurchaseHistory.key);
         if (cachedData != null) {
-          _purchaseHistory =
-              cachedData.map((data) => PurchaseHistory.fromJson(data)).toList();
-        } else {
-          _purchaseHistory = [];
+          List<PurchaseHistory> parsedCached = [];
+          for (var data in cachedData) {
+            try {
+              parsedCached.add(PurchaseHistory.fromJson(data));
+            } catch (e) {
+              // Skip invalid items
+              NyLogger.error('Error parsing cached data: $e');
+            }
+          }
+
+          setState(() {
+            _purchaseHistory = parsedCached;
+          });
         }
-      } catch (_) {
-        _purchaseHistory = [];
+      } catch (cacheError) {
+        NyLogger.error('Error loading cached data: $cacheError');
+        setState(() {
+          _purchaseHistory = [];
+        });
       }
 
-      // Show error using Nylo toast
+      // Show error toast
       showToast(
           title: trans("Error"),
-          description: trans(
-              "Failed to load purchase history from server, showing cached data"),
+          description: trans("Failed to load purchase history"),
           icon: Icons.error_outline,
           style: ToastNotificationStyleType.warning);
     } finally {
-      // Complete loading
       setLoading(false, name: 'fetch_purchase_history');
     }
   }
 
   void _viewCourseDetails(int courseId) {
     // Navigate to course details page
-    routeTo(CourseDetailPage.path, data: {'courseId': courseId});
+    // routeTo(CourseDetailPage.path, data: {'courseId': courseId});
   }
 
   @override
@@ -148,6 +167,13 @@ class _PurchaseHistoryPageState extends NyPage<PurchaseHistoryPage> {
               icon: Icon(Icons.arrow_back, color: Colors.black),
               onPressed: () => Navigator.pop(context),
             ),
+            actions: [
+              IconButton(
+                icon: Icon(Icons.refresh, color: Colors.black),
+                onPressed: () => _fetchPurchaseHistory(refresh: true),
+                tooltip: trans("Refresh"),
+              ),
+            ],
           ),
         ),
       ),
@@ -155,13 +181,16 @@ class _PurchaseHistoryPageState extends NyPage<PurchaseHistoryPage> {
         loadingKey: 'fetch_purchase_history',
         child: () => _purchaseHistory.isEmpty
             ? _buildEmptyState()
-            : ListView.builder(
-                padding: EdgeInsets.only(top: 12),
-                itemCount: _purchaseHistory.length,
-                itemBuilder: (context, index) {
-                  final purchase = _purchaseHistory[index];
-                  return _buildPurchaseItem(purchase);
-                },
+            : RefreshIndicator(
+                onRefresh: () => _fetchPurchaseHistory(refresh: true),
+                child: ListView.builder(
+                  padding: EdgeInsets.only(top: 12),
+                  itemCount: _purchaseHistory.length,
+                  itemBuilder: (context, index) {
+                    final purchase = _purchaseHistory[index];
+                    return _buildPurchaseItem(purchase);
+                  },
+                ),
               ),
       ),
     );
@@ -194,6 +223,19 @@ class _PurchaseHistoryPageState extends NyPage<PurchaseHistoryPage> {
             ),
             textAlign: TextAlign.center,
           ),
+          SizedBox(height: 24),
+          ElevatedButton(
+            onPressed: () => _fetchPurchaseHistory(refresh: true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.amber,
+              foregroundColor: Colors.black,
+              padding: EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+            child: Text(trans("Refresh")),
+          ),
         ],
       ),
     );
@@ -216,7 +258,7 @@ class _PurchaseHistoryPageState extends NyPage<PurchaseHistoryPage> {
         borderRadius: BorderRadius.circular(8),
         boxShadow: [
           BoxShadow(
-            color: Colors.grey.withValues(alpha: 0.1),
+            color: Colors.grey.withOpacity(0.1),
             spreadRadius: 0,
             blurRadius: 3,
             offset: Offset(0, 1),
@@ -298,13 +340,14 @@ class _PurchaseHistoryPageState extends NyPage<PurchaseHistoryPage> {
                     SizedBox(height: 4),
 
                     // Card Details
-                    Text(
-                      trans("Card") + ": ****" + purchase.card_last_four,
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.grey.shade700,
+                    if (purchase.card_last_four != null)
+                      Text(
+                        trans("Card") + ": ****" + purchase.card_last_four!,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey.shade700,
+                        ),
                       ),
-                    ),
 
                     SizedBox(height: 8),
 

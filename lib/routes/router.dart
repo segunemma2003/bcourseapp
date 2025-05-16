@@ -1,3 +1,5 @@
+import '/resources/pages/new_password_page.dart';
+import '/resources/pages/verify_o_t_p_page.dart';
 import '/resources/pages/video_player_page.dart';
 import '/resources/pages/forgot_password_page.dart';
 import '/resources/pages/legal_page.dart';
@@ -20,6 +22,8 @@ import '/resources/pages/base_navigation_hub.dart';
 import '/resources/pages/sign_up_page.dart';
 import '/resources/pages/not_found_page.dart';
 import 'package:nylo_framework/nylo_framework.dart';
+
+import 'guards/dashboard_route_guard.dart';
 
 /* App Router
 |--------------------------------------------------------------------------
@@ -52,7 +56,9 @@ appRouter() => nyRoutes((router) {
       //
       // });
       router.add(NotFoundPage.path).unknownRoute();
-      router.add(BaseNavigationHub.path);
+      router.add(BaseNavigationHub.path, routeGuards: [
+        DashboardRouteGuard() // Add your guard
+      ]).initialRoute();
       router.add(CourseCurriculumPage.path);
       router.add(CourseDetailPage.path);
       router.add(EnrollmentPlanPage.path);
@@ -61,7 +67,7 @@ appRouter() => nyRoutes((router) {
       router.add(PurchasedCourseDetailPage.path);
       router.add(CourseVideoPlayerPage.path);
       router.add(CourseDetailWishlistPage.path);
-      router.add(SigninPage.path).initialRoute();
+      router.add(SigninPage.path);
       router.add(ProfileDetailsPage.path);
       router.add(PaymentDetailsPage.path);
       router.add(PurchaseHistoryPage.path);
@@ -70,5 +76,7 @@ appRouter() => nyRoutes((router) {
       router.add(FaqDetailPage.path);
       router.add(LegalPage.path);
       router.add(ForgotPasswordPage.path);
-  router.add(VideoPlayerPage.path);
+      router.add(VideoPlayerPage.path);
+      router.add(VerifyOTPPage.path);
+  router.add(NewPasswordPage.path);
 });

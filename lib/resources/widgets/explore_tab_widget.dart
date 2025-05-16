@@ -252,6 +252,10 @@ class _ExploreTabState extends NyState<ExploreTab> {
   // UI Components
 
   Widget _buildWelcomeHeader() {
+    String apiBaseUrl = getEnv('API_BASE_URL');
+    String? profilePictureUrl =
+        userData != null ? userData['profile_picture_url'] : null;
+
     return Padding(
       padding: EdgeInsets.all(16),
       child: Row(
@@ -262,21 +266,41 @@ class _ExploreTabState extends NyState<ExploreTab> {
               children: [
                 // User avatar/profile image
                 ClipOval(
-                  child: Image.asset(
-                    "profile_image.png",
+                  child: Container(
                     width: 40,
                     height: 40,
-                    fit: BoxFit.cover,
-                    errorBuilder: (context, error, stackTrace) => Container(
-                      width: 40,
-                      height: 40,
-                      decoration: BoxDecoration(
-                        color: Colors.grey[300],
-                        shape: BoxShape.circle,
-                      ),
-                      child: Icon(Icons.person, color: Colors.grey[600]),
+                    decoration: BoxDecoration(
+                      color: Colors.grey[300],
+                      shape: BoxShape.circle,
                     ),
-                  ).localAsset(),
+                    child: profilePictureUrl != null
+                        ? Image.network(
+                            // Handle both relative and absolute URLs
+                            profilePictureUrl.startsWith('http')
+                                ? profilePictureUrl
+                                : "$apiBaseUrl$profilePictureUrl",
+                            width: 40,
+                            height: 40,
+                            fit: BoxFit.cover,
+                            errorBuilder: (context, error, stackTrace) {
+                              return _buildProfileInitial();
+                            },
+                            loadingBuilder: (context, child, loadingProgress) {
+                              if (loadingProgress == null) return child;
+                              return Center(
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  value: loadingProgress.expectedTotalBytes !=
+                                          null
+                                      ? loadingProgress.cumulativeBytesLoaded /
+                                          loadingProgress.expectedTotalBytes!
+                                      : null,
+                                ),
+                              );
+                            },
+                          )
+                        : _buildProfileInitial(),
+                  ),
                 ),
                 SizedBox(width: 12),
                 // User greeting and app tagline
@@ -336,6 +360,23 @@ class _ExploreTabState extends NyState<ExploreTab> {
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildProfileInitial() {
+    String fullName = userData != null && userData['full_name'] != null
+        ? userData['full_name']
+        : '';
+
+    return Center(
+      child: Text(
+        fullName.isNotEmpty ? fullName[0].toUpperCase() : 'B',
+        style: TextStyle(
+          fontSize: 18,
+          fontWeight: FontWeight.bold,
+          color: Colors.grey[700],
+        ),
       ),
     );
   }

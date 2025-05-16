@@ -6,6 +6,7 @@ class User extends Model {
   final String fullName;
   final String phoneNumber;
   final String? dateOfBirth;
+  final String? profilePictureUrl;
 
   static String storageKey = "user";
 
@@ -15,6 +16,7 @@ class User extends Model {
     required this.fullName,
     required this.phoneNumber,
     this.dateOfBirth,
+    this.profilePictureUrl,
   }) : super(key: storageKey);
 
   User.fromJson(dynamic data)
@@ -23,6 +25,7 @@ class User extends Model {
         fullName = data['full_name'] ?? '',
         phoneNumber = data['phone_number'] ?? '',
         dateOfBirth = data['date_of_birth'],
+        profilePictureUrl = data['profile_picture_url'],
         super(key: storageKey);
 
   @override
@@ -33,6 +36,7 @@ class User extends Model {
       'full_name': fullName,
       'phone_number': phoneNumber,
       'date_of_birth': dateOfBirth,
+      'profile_picture_url': profilePictureUrl,
     };
   }
 }

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_app/app/networking/user_api_service.dart';
 import 'package:flutter_app/resources/pages/base_navigation_hub.dart';
@@ -8,6 +9,7 @@ import 'package:flutter_app/resources/pages/payment_details_page.dart';
 import 'package:flutter_app/resources/pages/profile_details_page.dart';
 import 'package:flutter_app/resources/pages/purchase_history_page.dart';
 import 'package:flutter_app/resources/pages/signin_page.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 
 class ProfileTab extends StatefulWidget {
@@ -23,10 +25,13 @@ class ProfileTab extends StatefulWidget {
 class _ProfileTabState extends NyState<ProfileTab> {
   String userName = "";
   String userEmail = "";
-  String userImage = "profile_image.png"; // Path to user image
+  String? profilePictureUrl; // Updated to be nullable
   bool _isAuthenticated = false;
+  bool _isUploadingImage = false;
 
-  UserApiService _userApiService = UserApiService();
+  final UserApiService _userApiService = UserApiService();
+  final ImagePicker _imagePicker = ImagePicker();
+
   // Set state name for Nylo's state management
   _ProfileTabState() {
     stateName = ProfileTab.state;
@@ -63,6 +68,7 @@ class _ProfileTabState extends NyState<ProfileTab> {
         setState(() {
           userName = "";
           userEmail = "";
+          profilePictureUrl = null;
         });
       }
     }
@@ -81,27 +87,40 @@ class _ProfileTabState extends NyState<ProfileTab> {
         setState(() {
           userName = userData['full_name'] ?? userData['fullName'] ?? "";
           userEmail = userData['email'] ?? "";
-
-          // If there's a profile image in the user data
-          if (userData['profile_image'] != null) {
-            userImage = userData['profile_image'];
-          }
+          profilePictureUrl = userData['profile_picture_url'];
         });
       } else {
         // Attempt to get user from storage
-        String? userJson = await NyStorage.read('user');
+        var userJson = await Auth.data();
         if (userJson != null) {
-          Map<String, dynamic> storedUser = jsonDecode(userJson);
+          Map<String, dynamic> storedUser = userJson;
           setState(() {
             userName = storedUser['full_name'] ?? storedUser['fullName'] ?? "";
             userEmail = storedUser['email'] ?? "";
-
-            // If there's a profile image in the user data
-            if (storedUser['profile_image'] != null) {
-              userImage = storedUser['profile_image'];
-            }
+            profilePictureUrl = storedUser['profile_picture_url'];
           });
         }
+      }
+
+      // Try to get fresh profile picture data
+      try {
+        final pictureData = await _userApiService.getProfilePicture();
+        if (pictureData != null && pictureData['profile_picture_url'] != null) {
+          setState(() {
+            profilePictureUrl = pictureData['profile_picture_url'];
+          });
+
+          // Update auth data
+          var userData = await Auth.data();
+          if (userData != null) {
+            userData['profile_picture_url'] = profilePictureUrl;
+            await Auth.authenticate(data: userData);
+            await storageSave("user", userData);
+          }
+        }
+      } catch (e) {
+        // Just log the error but continue, as we may already have the profile picture
+        NyLogger.error('Failed to get fresh profile picture: $e');
       }
     } catch (e) {
       NyLogger.error('Failed to load user data: $e');
@@ -113,6 +132,222 @@ class _ProfileTabState extends NyState<ProfileTab> {
           style: ToastNotificationStyleType.danger);
     } finally {
       setLoading(false, name: 'fetch_profile');
+    }
+  }
+
+  Future<void> _pickAndUploadImage() async {
+    try {
+      if (_isUploadingImage) return; // Prevent multiple uploads
+
+      setState(() {
+        _isUploadingImage = true;
+      });
+
+      // Show action sheet to choose camera or gallery
+      showModalBottomSheet(
+        context: context,
+        builder: (BuildContext context) {
+          return SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  leading: Icon(Icons.photo_camera),
+                  title: Text(trans("Take a photo")),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _getAndUploadImage(ImageSource.camera);
+                  },
+                ),
+                ListTile(
+                  leading: Icon(Icons.photo_library),
+                  title: Text(trans("Choose from gallery")),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _getAndUploadImage(ImageSource.gallery);
+                  },
+                ),
+                if (profilePictureUrl != null)
+                  ListTile(
+                    leading: Icon(Icons.delete_outline, color: Colors.red),
+                    title: Text(trans("Remove current photo")),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _deleteProfilePicture();
+                    },
+                  ),
+                ListTile(
+                  leading: Icon(Icons.cancel),
+                  title: Text(trans("Cancel")),
+                  onTap: () {
+                    Navigator.pop(context);
+                  },
+                ),
+              ],
+            ),
+          );
+        },
+      ).then((_) {
+        // Reset uploading state if user cancels
+        if (_isUploadingImage) {
+          setState(() {
+            _isUploadingImage = false;
+          });
+        }
+      });
+    } catch (e) {
+      setState(() {
+        _isUploadingImage = false;
+      });
+      NyLogger.error('Error showing image source options: $e');
+    }
+  }
+
+  Future<void> _getAndUploadImage(ImageSource source) async {
+    try {
+      // Pick image
+      final XFile? pickedFile = await _imagePicker.pickImage(
+        source: source,
+        imageQuality:
+            80, // Reduce quality slightly for better upload performance
+        maxWidth: 800, // Limit width
+        maxHeight: 800, // Limit height
+      );
+
+      if (pickedFile == null) {
+        setState(() {
+          _isUploadingImage = false;
+        });
+        return;
+      }
+
+      // Show loading indicator
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (BuildContext context) {
+          return Dialog(
+            child: Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(width: 20),
+                  Text(trans("Uploading image...")),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+
+      // Upload the image
+      final File imageFile = File(pickedFile.path);
+      final result = await _userApiService.uploadProfilePicture(imageFile);
+
+      // Close loading dialog
+      Navigator.of(context, rootNavigator: true).pop();
+
+      // Update UI with new profile picture
+      setState(() {
+        profilePictureUrl = result['profile_picture_url'];
+        _isUploadingImage = false;
+      });
+
+      // Show success message
+      showToastSuccess(
+          description: trans("Profile picture updated successfully"));
+
+      // Refresh profile
+      _loadUserData();
+    } catch (e) {
+      // Close loading dialog if open
+      try {
+        Navigator.of(context, rootNavigator: true).pop();
+      } catch (_) {}
+
+      setState(() {
+        _isUploadingImage = false;
+      });
+
+      NyLogger.error('Failed to update profile picture: $e');
+      showToastDanger(description: trans("Failed to update profile picture"));
+    }
+  }
+
+  Future<void> _deleteProfilePicture() async {
+    try {
+      // Show confirmation dialog
+      bool? confirm = await showDialog<bool>(
+        context: context,
+        builder: (BuildContext context) {
+          return AlertDialog(
+            title: Text(trans("Remove Profile Picture")),
+            content: Text(
+                trans("Are you sure you want to remove your profile picture?")),
+            actions: [
+              TextButton(
+                child: Text(trans("Cancel")),
+                onPressed: () => Navigator.of(context).pop(false),
+              ),
+              TextButton(
+                child:
+                    Text(trans("Remove"), style: TextStyle(color: Colors.red)),
+                onPressed: () => Navigator.of(context).pop(true),
+              ),
+            ],
+          );
+        },
+      );
+
+      if (confirm != true) return;
+
+      // Show loading indicator
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (BuildContext context) {
+          return Dialog(
+            child: Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(width: 20),
+                  Text(trans("Removing image...")),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+
+      // Delete the profile picture
+      await _userApiService.deleteProfilePicture();
+
+      // Close loading dialog
+      Navigator.of(context, rootNavigator: true).pop();
+
+      // Update UI
+      setState(() {
+        profilePictureUrl = null;
+      });
+
+      // Show success message
+      showToastSuccess(description: trans("Profile picture removed"));
+
+      // Refresh profile
+      _loadUserData();
+    } catch (e) {
+      // Close loading dialog if open
+      try {
+        Navigator.of(context, rootNavigator: true).pop();
+      } catch (_) {}
+
+      NyLogger.error('Failed to delete profile picture: $e');
+      showToastDanger(description: trans("Failed to remove profile picture"));
     }
   }
 
@@ -158,6 +393,7 @@ class _ProfileTabState extends NyState<ProfileTab> {
             _isAuthenticated = false;
             userName = "";
             userEmail = "";
+            profilePictureUrl = null;
           });
 
           // Show success toast
@@ -212,7 +448,6 @@ class _ProfileTabState extends NyState<ProfileTab> {
             ),
             actions: [
               // Refresh button if authenticated
-
               IconButton(
                 icon: Icon(Icons.refresh, color: Colors.black87),
                 onPressed: () => _loadUserData(),
@@ -313,6 +548,155 @@ class _ProfileTabState extends NyState<ProfileTab> {
     );
   }
 
+  Widget _buildProfileHeader() {
+    String apiBaseUrl = getEnv('API_BASE_URL');
+
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.symmetric(vertical: 24),
+      color: Colors.white,
+      child: Column(
+        children: [
+          // Profile Image with Camera Icon
+          Stack(
+            alignment: Alignment.center,
+            children: [
+              // Profile Image
+              GestureDetector(
+                onTap: _isAuthenticated ? _pickAndUploadImage : null,
+                child: Container(
+                  width: 100,
+                  height: 100,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.grey.shade200,
+                    border: Border.all(color: Colors.grey.shade300, width: 1),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(50),
+                    child: profilePictureUrl != null
+                        ? Image.network(
+                            // Handle both relative and absolute URLs
+                            profilePictureUrl!.startsWith('http')
+                                ? profilePictureUrl!
+                                : "$apiBaseUrl$profilePictureUrl",
+                            fit: BoxFit.cover,
+                            loadingBuilder: (context, child, loadingProgress) {
+                              if (loadingProgress == null) return child;
+                              return Center(
+                                child: CircularProgressIndicator(
+                                  value: loadingProgress.expectedTotalBytes !=
+                                          null
+                                      ? loadingProgress.cumulativeBytesLoaded /
+                                          loadingProgress.expectedTotalBytes!
+                                      : null,
+                                ),
+                              );
+                            },
+                            errorBuilder: (context, error, stackTrace) {
+                              return Center(
+                                child: Text(
+                                  userName.isNotEmpty
+                                      ? userName[0].toUpperCase()
+                                      : "U",
+                                  style: TextStyle(
+                                    fontSize: 40,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.grey.shade800,
+                                  ),
+                                ),
+                              );
+                            },
+                          )
+                        : Center(
+                            child: Text(
+                              userName.isNotEmpty
+                                  ? userName[0].toUpperCase()
+                                  : "U",
+                              style: TextStyle(
+                                fontSize: 40,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.grey.shade800,
+                              ),
+                            ),
+                          ),
+                  ),
+                ),
+              ),
+
+              // Camera Icon (positioned at bottom right)
+              if (_isAuthenticated)
+                Positioned(
+                  bottom: 0,
+                  right: 0,
+                  child: GestureDetector(
+                    onTap: _pickAndUploadImage,
+                    child: Container(
+                      padding: EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.amber,
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black26,
+                            blurRadius: 4,
+                            offset: Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Icon(
+                        Icons.photo_camera,
+                        size: 20,
+                        color: Colors.black87,
+                      ),
+                    ),
+                  ),
+                ),
+
+              // Loading overlay
+              if (_isUploadingImage)
+                Container(
+                  width: 100,
+                  height: 100,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.black.withOpacity(0.5),
+                  ),
+                  child: Center(
+                    child: CircularProgressIndicator(
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+
+          SizedBox(height: 16),
+
+          // User Name
+          Text(
+            userName.isNotEmpty ? userName : trans("Guest User"),
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+
+          SizedBox(height: 4),
+
+          // User Email
+          Text(
+            userEmail.isNotEmpty ? userEmail : trans("Not signed in"),
+            style: TextStyle(
+              fontSize: 14,
+              color: Colors.grey.shade600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildLoginPrompt() {
     return Container(
       padding: EdgeInsets.symmetric(horizontal: 24),
@@ -402,113 +786,6 @@ class _ProfileTabState extends NyState<ProfileTab> {
             ),
           ),
           SizedBox(height: 16),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildProfileHeader() {
-    return Container(
-      width: double.infinity,
-      padding: EdgeInsets.symmetric(vertical: 24),
-      color: Colors.white,
-      child: Column(
-        children: [
-          // Profile Image with Camera Icon
-          Stack(
-            alignment: Alignment.center,
-            children: [
-              // Profile Image
-              Container(
-                width: 100,
-                height: 100,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Colors.grey.shade200,
-                ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(50),
-                  child: userImage.startsWith('http')
-                      ? Image.network(
-                          userImage,
-                          fit: BoxFit.cover,
-                          errorBuilder: (context, error, stackTrace) {
-                            return Center(
-                              child: Text(
-                                userName.isNotEmpty
-                                    ? userName[0].toUpperCase()
-                                    : "U",
-                                style: TextStyle(
-                                  fontSize: 40,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.grey.shade800,
-                                ),
-                              ),
-                            );
-                          },
-                        )
-                      : Image.asset(
-                          getImageAsset(userImage),
-                          fit: BoxFit.cover,
-                          errorBuilder: (context, error, stackTrace) {
-                            return Center(
-                              child: Text(
-                                userName.isNotEmpty
-                                    ? userName[0].toUpperCase()
-                                    : "U",
-                                style: TextStyle(
-                                  fontSize: 40,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.grey.shade800,
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                ),
-              ),
-
-              // Camera Icon (positioned at bottom right)
-              Positioned(
-                bottom: 0,
-                right: 0,
-                child: Container(
-                  padding: EdgeInsets.all(4),
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Colors.amber,
-                  ),
-                  child: Icon(
-                    Icons.photo_camera,
-                    size: 16,
-                    color: Colors.black87,
-                  ),
-                ),
-              ),
-            ],
-          ),
-
-          SizedBox(height: 16),
-
-          // User Name
-          Text(
-            userName.isNotEmpty ? userName : trans("Guest User"),
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-
-          SizedBox(height: 4),
-
-          // User Email
-          Text(
-            userEmail.isNotEmpty ? userEmail : trans("Not signed in"),
-            style: TextStyle(
-              fontSize: 14,
-              color: Colors.grey.shade600,
-            ),
-          ),
         ],
       ),
     );

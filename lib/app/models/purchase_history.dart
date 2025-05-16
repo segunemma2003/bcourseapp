@@ -6,10 +6,10 @@ class PurchaseHistory extends Model {
   final String course_title;
   final String? course_image;
   final int? payment_card;
-  final String card_last_four;
+  final String? card_last_four; // Make nullable
   final String amount;
   final DateTime purchase_date;
-  final String transaction_id;
+  final String? transaction_id; // Make nullable
   final String payment_status;
   final String? razorpay_order_id;
   final String? razorpay_payment_id;
@@ -22,10 +22,10 @@ class PurchaseHistory extends Model {
     required this.course_title,
     this.course_image,
     this.payment_card,
-    required this.card_last_four,
+    this.card_last_four, // Now nullable
     required this.amount,
     required this.purchase_date,
-    required this.transaction_id,
+    this.transaction_id, // Now nullable
     required this.payment_status,
     this.razorpay_order_id,
     this.razorpay_payment_id,
@@ -34,14 +34,18 @@ class PurchaseHistory extends Model {
   PurchaseHistory.fromJson(Map<String, dynamic> data)
       : id = data['id'],
         course = data['course'],
-        course_title = data['course_title'],
+        course_title =
+            data['course_title'] ?? 'Unknown Course', // Add fallback value
         course_image = data['course_image'],
         payment_card = data['payment_card'],
-        card_last_four = data['card_last_four'],
-        amount = data['amount'],
-        purchase_date = DateTime.parse(data['purchase_date']),
+        card_last_four = data['card_last_four'] ?? 'XXXX', // Add fallback value
+        amount = data['amount'] ?? '0.00', // Add fallback value
+        purchase_date = data['purchase_date'] != null
+            ? DateTime.parse(data['purchase_date'])
+            : DateTime.now(), // Add fallback value
         transaction_id = data['transaction_id'],
-        payment_status = data['payment_status'],
+        payment_status =
+            data['payment_status'] ?? 'Unknown', // Add fallback value
         razorpay_order_id = data['razorpay_order_id'],
         razorpay_payment_id = data['razorpay_payment_id'],
         super(key: key);

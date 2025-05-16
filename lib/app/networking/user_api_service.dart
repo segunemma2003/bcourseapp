@@ -5,6 +5,9 @@ import 'package:flutter_app/utils/system_util.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import '/config/decoders.dart';
 import 'package:nylo_framework/nylo_framework.dart';
+import 'dart:io';
+import 'package:image_picker/image_picker.dart';
+import 'package:http_parser/http_parser.dart';
 
 class UserApiService extends NyApiService {
   UserApiService({BuildContext? buildContext})
@@ -112,6 +115,103 @@ class UserApiService extends NyApiService {
             throw Exception(errorMessage);
           }
           throw Exception("Login failed: ${dioError.message}");
+        });
+  }
+
+  Future<dynamic> getProfilePicture() async {
+    final authToken = await backpackRead('auth_token');
+
+    if (authToken == null) {
+      throw Exception("Not logged in");
+    }
+
+    return await network(
+        request: (request) => request.get("/profile/picture/"),
+        headers: {
+          "Authorization": "Token ${authToken}",
+        },
+        handleSuccess: (Response response) async {
+          return response.data;
+        },
+        handleFailure: (DioException dioError) {
+          throw Exception("Failed to get profile picture: ${dioError.message}");
+        });
+  }
+
+  Future<dynamic> uploadProfilePicture(File imageFile) async {
+    final authToken = await backpackRead('auth_token');
+
+    if (authToken == null) {
+      throw Exception("Not logged in");
+    }
+
+    // Get file extension and prepare FormData
+    String fileName = imageFile.path.split('/').last;
+    String extension = fileName.split('.').last.toLowerCase();
+
+    // Create form data for multipart upload
+    FormData formData = FormData.fromMap({
+      "profile_picture": await MultipartFile.fromFile(
+        imageFile.path,
+        filename: fileName,
+        contentType: MediaType('image', extension),
+      ),
+    });
+
+    return await network(
+        request: (request) => request.patch(
+              "/profile/picture/upload/",
+              data: formData,
+            ),
+        headers: {
+          "Authorization": "Token ${authToken}",
+          "Content-Type": "multipart/form-data",
+        },
+        handleSuccess: (Response response) async {
+          // Update user data with new profile picture
+          var userData = await Auth.data();
+          if (userData != null) {
+            userData['profile_picture_url'] =
+                response.data['profile_picture_url'];
+            await Auth.authenticate(data: userData);
+            await storageSave("user", userData);
+          }
+
+          return response.data;
+        },
+        handleFailure: (DioException dioError) {
+          throw Exception(
+              "Failed to upload profile picture: ${dioError.message}");
+        });
+  }
+
+  /// Delete profile picture
+  Future<bool> deleteProfilePicture() async {
+    final authToken = await backpackRead('auth_token');
+
+    if (authToken == null) {
+      throw Exception("Not logged in");
+    }
+
+    return await network(
+        request: (request) => request.delete("/profile/picture/"),
+        headers: {
+          "Authorization": "Token ${authToken}",
+        },
+        handleSuccess: (Response response) async {
+          // Update user data after picture deletion
+          var userData = await Auth.data();
+          if (userData != null) {
+            userData['profile_picture_url'] = null;
+            await Auth.authenticate(data: userData);
+            await storageSave("user", userData);
+          }
+
+          return true;
+        },
+        handleFailure: (DioException dioError) {
+          throw Exception(
+              "Failed to delete profile picture: ${dioError.message}");
         });
   }
 
@@ -235,8 +335,7 @@ class UserApiService extends NyApiService {
         });
   }
 
-  /// Request password reset (OTP)
-  Future<bool> requestPasswordReset({required String email}) async {
+  Future<dynamic> requestPasswordReset({required String email}) async {
     return await network(
         request: (request) => request.post(
               "/auth/forgot-password/",
@@ -246,7 +345,8 @@ class UserApiService extends NyApiService {
             ),
         handleSuccess: (Response response) async {
           await storageSave("forgot_email", email);
-          return true;
+          return response
+              .data; // Returns {message: string, otp_expires_in: string}
         },
         handleFailure: (DioException dioError) {
           if (dioError.response?.data != null) {
@@ -260,11 +360,10 @@ class UserApiService extends NyApiService {
         });
   }
 
-  /// Verify OTP and reset password
-  Future<bool> verifyOTPAndResetPassword({
+  /// Verify OTP - UPDATED (separate endpoint)
+  Future<dynamic> verifyOTP({
     required String email,
     required String otp,
-    required String newPassword,
   }) async {
     return await network(
         request: (request) => request.post(
@@ -272,11 +371,12 @@ class UserApiService extends NyApiService {
               data: {
                 "email": email,
                 "otp": otp,
-                "new_password": newPassword,
               },
             ),
-        handleSuccess: (Response response) {
-          return true;
+        handleSuccess: (Response response) async {
+          // Store verification success in storage for next step
+          await storageSave("otp_verified", true);
+          return response.data; // Returns {message: string, otp_verified: bool}
         },
         handleFailure: (DioException dioError) {
           if (dioError.response?.data != null) {
@@ -286,6 +386,42 @@ class UserApiService extends NyApiService {
             }
           }
           throw Exception("Failed to verify OTP: ${dioError.message}");
+        });
+  }
+
+  /// Reset password with verified OTP - UPDATED
+  Future<dynamic> resetPasswordWithVerifiedOTP({
+    required String email,
+    required String otp,
+    required String newPassword,
+    required String confirmPassword,
+  }) async {
+    return await network(
+        request: (request) => request.post(
+              "/auth/reset-password/",
+              data: {
+                "email": email,
+                "otp": otp,
+                "new_password": newPassword,
+                "confirm_password": confirmPassword,
+              },
+            ),
+        handleSuccess: (Response response) async {
+          // Clear temporary storage after successful reset
+          await storageDelete("forgot_email");
+          await storageDelete("otp_verified");
+          await storageDelete("temp_otp");
+          return response
+              .data; // Returns {message: string, password_reset: bool}
+        },
+        handleFailure: (DioException dioError) {
+          if (dioError.response?.data != null) {
+            final errors = dioError.response!.data;
+            if (errors.containsKey('error')) {
+              throw Exception(errors['error']);
+            }
+          }
+          throw Exception("Failed to reset password: ${dioError.message}");
         });
   }
 
