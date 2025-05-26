@@ -1,12 +1,14 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_app/resources/pages/course_curriculum_page.dart';
+import 'package:flutter_app/resources/pages/enrollment_plan_page.dart';
+import 'package:intl/intl.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 
 import '../../app/models/course.dart';
+import '../../app/models/enrollment.dart';
 import '../../app/networking/course_api_service.dart';
 import '../../app/services/video_service.dart';
-import '../../utils/course_data.dart';
 import '../widgets/courses_tab_widget.dart';
 
 class PurchasedCourseDetailPage extends NyStatefulWidget {
@@ -21,13 +23,15 @@ class _PurchasedCourseDetailPageState
     extends NyPage<PurchasedCourseDetailPage> {
   late Course _course;
   List<dynamic> _curriculumItems = [];
-  int _currentLessonIndex = 0; // Track current lesson
+  int _currentLessonIndex = 0;
   bool _isDownloaded = false;
 
-  // Video service to track downloads and playback
+  bool _hasValidSubscription = true;
+  bool _isEnrolled = true;
+
   final VideoService _videoService = VideoService();
   final CourseApiService _courseApiService = CourseApiService();
-  // Track lesson progress
+
   Map<int, bool> _completedLessons = {};
   List<dynamic> objectives = [];
   List<dynamic> requirements = [];
@@ -36,36 +40,60 @@ class _PurchasedCourseDetailPageState
   String _totalDuration = "- minutes";
   double _courseProgress = 0.0;
 
-  // Track downloaded videos
   Map<int, bool> _downloadedVideos = {};
 
   @override
   get init => () async {
         super.init();
 
-        // Get course from widget.data()
-        _course = widget.data()['course'];
+        Map<String, dynamic> data = widget.data();
+        _course = data['course'];
 
-        // Get saved progress from storage if any
+        // Get curriculum from passed data if available
+        if (data.containsKey('curriculum') && data['curriculum'] != null) {
+          _curriculumItems = List<dynamic>.from(data['curriculum']);
+          _totalLessons = _curriculumItems.length;
+          _calculateTotalDuration();
+        } else {
+          // Only fetch if not provided
+          await _fetchCourseDetails(_course);
+        }
+
+        // Get objectives and requirements from passed data if available
+        if (data.containsKey('objectives') && data['objectives'] != null) {
+          objectives = List<dynamic>.from(data['objectives']);
+        }
+
+        if (data.containsKey('requirements') && data['requirements'] != null) {
+          requirements = List<dynamic>.from(data['requirements']);
+        }
+
         await _loadSavedProgress();
-
-        // Fetch curriculum items
-        await _fetchCourseDetails(_course);
+        await _checkSubscriptionStatus();
+        await _checkDownloadedVideos();
       };
+
+  Future<void> _checkSubscriptionStatus() async {
+    try {
+      bool isValid =
+          await _courseApiService.checkEnrollmentValidity(_course.id);
+      setState(() {
+        _hasValidSubscription = isValid;
+      });
+    } catch (e) {
+      NyLogger.error('Error checking subscription status: $e');
+    }
+  }
 
   Future<void> _loadSavedProgress() async {
     try {
-      // Load saved progress from NyStorage
       String key = 'course_progress_${_course.id}';
       Map<String, dynamic>? savedProgress = await NyStorage.read(key);
 
       if (savedProgress != null) {
         setState(() {
-          // Convert the saved progress map to our format
           _completedLessons =
               Map<int, bool>.from(savedProgress['completedLessons'] ?? {});
-
-          // Resume from last watched lesson
           _currentLessonIndex = savedProgress['currentLesson'] ?? 0;
         });
       }
@@ -74,16 +102,74 @@ class _PurchasedCourseDetailPageState
     }
   }
 
+  Future<void> _fetchCourseDetails(Course course) async {
+    setLoading(true);
+
+    try {
+      await Future.delayed(Duration(milliseconds: 800));
+
+      int courseId = course.id;
+
+      // Fetch curriculum only if not already provided
+      if (_curriculumItems.isEmpty) {
+        await _loadCourseCurriculum(courseId).catchError((e) {
+          print('Error loading curriculum: $e');
+          _curriculumItems = [];
+        });
+      }
+
+      if (mounted) {
+        setLoading(false, name: 'curriculum');
+        _calculateTotalDuration();
+      }
+
+      // Fetch objectives only if not already provided
+      if (objectives.isEmpty) {
+        await _loadCourseObjectives(courseId).catchError((e) {
+          print('Error loading objectives: $e');
+          objectives = [];
+        });
+      }
+
+      if (mounted) {
+        setLoading(false, name: 'objectives');
+      }
+
+      // Fetch requirements only if not already provided
+      if (requirements.isEmpty) {
+        await _loadCourseRequirements(courseId).catchError((e) {
+          print('Error loading requirements: $e');
+          requirements = [];
+        });
+      }
+
+      if (mounted) {
+        setLoading(false, name: 'requirements');
+      }
+
+      _totalLessons = _curriculumItems.length;
+      await _checkDownloadedVideos();
+      _updateCourseProgress();
+    } catch (e) {
+      NyLogger.error('Failed to fetch course details: $e');
+      showToast(
+          title: trans("Error"),
+          description: trans("Failed to load course details"),
+          icon: Icons.error_outline,
+          style: ToastNotificationStyleType.danger);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   Future<void> _loadCourseCurriculum(int courseId) async {
     try {
       _curriculumItems = await _courseApiService.getCourseCurriculum(courseId);
-      // Sort by order field
       _curriculumItems.sort((a, b) => a['order'].compareTo(b['order']));
     } catch (e) {
       print('Error loading curriculum: $e');
-      // Set empty list on error
       _curriculumItems = [];
-      rethrow; // Rethrow to indicate this operation failed
+      rethrow;
     }
   }
 
@@ -92,9 +178,8 @@ class _PurchasedCourseDetailPageState
       objectives = await _courseApiService.getCourseObjectives(courseId);
     } catch (e) {
       print('Error loading objectives: $e');
-      // Set empty list on error
       objectives = [];
-      rethrow; // Rethrow to indicate this operation failed
+      rethrow;
     }
   }
 
@@ -103,71 +188,8 @@ class _PurchasedCourseDetailPageState
       requirements = await _courseApiService.getCourseRequirements(courseId);
     } catch (e) {
       print('Error loading requirements: $e');
-      // Set empty list on error
       requirements = [];
-      rethrow; // Rethrow to indicate this operation failed
-    }
-  }
-
-  Future<void> _fetchCourseDetails(course) async {
-    setLoading(true);
-
-    try {
-      // Simulate API delay
-      await Future.delayed(Duration(milliseconds: 800));
-
-      // Fetch curriculum items - this would normally come from an API
-      // Here we use the local data, but in a real app this would come from the server
-      int courseId = course!.id;
-      await _loadCourseCurriculum(courseId).catchError((e) {
-        print('Error loading curriculum: $e');
-        // Set empty list on error
-        _curriculumItems = [];
-      });
-
-      if (mounted) {
-        setLoading(false, name: 'curriculum');
-        // Calculate total duration once curriculum is loaded
-        _calculateTotalDuration();
-      }
-
-      await _loadCourseObjectives(courseId).catchError((e) {
-        print('Error loading objectives: $e');
-        objectives = [];
-      });
-
-      if (mounted) {
-        setLoading(false, name: 'objectives');
-      }
-
-      // Load requirements next
-      await _loadCourseRequirements(courseId).catchError((e) {
-        print('Error loading requirements: $e');
-        requirements = [];
-      });
-
-      if (mounted) {
-        setLoading(false, name: 'requirements');
-      }
-
-      // _curriculumItems = CourseData.getCurriculumItems();
-      // _totalLessons = _curriculumItems.length;
-
-      // Check if videos are downloaded
-      await _checkDownloadedVideos();
-
-      // Calculate course progress
-      _updateCourseProgress();
-    } catch (e) {
-      NyLogger.error('Failed to fetch course details: $e');
-
-      showToast(
-          title: trans("Error"),
-          description: trans("Failed to load course details"),
-          icon: Icons.error_outline,
-          style: ToastNotificationStyleType.danger);
-    } finally {
-      setLoading(false);
+      rethrow;
     }
   }
 
@@ -184,14 +206,12 @@ class _PurchasedCourseDetailPageState
               int seconds = int.parse(parts[1]);
               totalSeconds += (minutes * 60) + seconds;
             } catch (e) {
-              // Skip invalid durations
               print('Error parsing duration: $e');
             }
           }
         }
       }
 
-      // Format total duration
       int hours = totalSeconds ~/ 3600;
       int minutes = (totalSeconds % 3600) ~/ 60;
 
@@ -208,7 +228,6 @@ class _PurchasedCourseDetailPageState
   }
 
   Future<void> _checkDownloadedVideos() async {
-    // Check which videos are downloaded using the VideoService
     for (int i = 0; i < _curriculumItems.length; i++) {
       var item = _curriculumItems[i];
 
@@ -216,46 +235,37 @@ class _PurchasedCourseDetailPageState
         final String courseIdStr = _course.id.toString();
         final String videoIdStr = i.toString();
 
-        // Check if already downloaded
         bool isDownloaded = await _videoService.isVideoDownloaded(
           videoUrl: item['video_url'],
           courseId: courseIdStr,
           videoId: videoIdStr,
         );
 
-        // Check if currently downloading or watermarking
         bool isDownloading =
             _videoService.isDownloading(courseIdStr, videoIdStr);
         bool isWatermarking =
             _videoService.isWatermarking(courseIdStr, videoIdStr);
-
-        // Check if queued
         bool isQueued = _videoService.isQueued(courseIdStr, videoIdStr);
 
         setState(() {
-          // Only consider as downloaded if not in any other state
           _downloadedVideos[i] =
               isDownloaded && !isDownloading && !isWatermarking && !isQueued;
         });
       }
     }
 
-    // Course is considered downloaded if at least one video is downloaded
     setState(() {
       _isDownloaded = _downloadedVideos.values.any((downloaded) => downloaded);
     });
   }
 
   void _updateCourseProgress() {
-    // Count completed lessons
     _completedLessonsCount =
         _completedLessons.values.where((completed) => completed).length;
 
-    // Calculate percentage completed
     _courseProgress =
         _totalLessons > 0 ? _completedLessonsCount / _totalLessons : 0.0;
 
-    // Save progress
     _saveProgress();
   }
 
@@ -268,7 +278,6 @@ class _PurchasedCourseDetailPageState
         'lastUpdated': DateTime.now().toIso8601String(),
       });
 
-      // Also update in CoursesTab to reflect the progress
       updateState(CoursesTab.state, data: "update_course_progress");
     } catch (e) {
       NyLogger.error('Failed to save progress: $e');
@@ -280,14 +289,11 @@ class _PurchasedCourseDetailPageState
       _currentLessonIndex = index;
     });
 
-    // Check if the video is downloaded
     bool isDownloaded = _downloadedVideos[index] ?? false;
 
     if (isDownloaded) {
-      // Play the video using VideoService
       _playVideo(index);
     } else {
-      // Navigate to curriculum page for download/management
       _navigateToCurriculumPage(index);
     }
   }
@@ -298,26 +304,18 @@ class _PurchasedCourseDetailPageState
     var item = _curriculumItems[index];
 
     try {
-      // Play the video using VideoService
-      Future<void> played = _videoService.playVideo(
+      await _videoService.playVideo(
         videoUrl: item['video_url'],
         courseId: _course.id.toString(),
         videoId: index.toString(),
-        watermarkText: "User", // This would come from user profile
+        watermarkText: "User",
         context: context,
       );
 
-      // Mark as completed after watching
       setState(() {
         _completedLessons[index] = true;
         _updateCourseProgress();
       });
-
-      // showToast(
-      //     title: trans("Success"),
-      //     description: trans("Lesson marked as completed"),
-      //     icon: Icons.check_circle,
-      //     style: ToastNotificationStyleType.success);
     } catch (e) {
       NyLogger.error('Failed to play video: $e');
       showToast(
@@ -329,19 +327,19 @@ class _PurchasedCourseDetailPageState
   }
 
   void _navigateToCurriculumPage(int startIndex) {
-    // Navigate to curriculum page with current course and curriculum data
+    // Pass all available data to avoid API calls
     routeTo(CourseCurriculumPage.path, data: {
       'course': _course,
       'curriculum': _curriculumItems,
+      'objectives': objectives,
+      'requirements': requirements,
       'startIndex': startIndex,
     }).then((_) {
-      // Refresh downloaded status when returning from curriculum page
       _checkDownloadedVideos();
     });
   }
 
   void _toggleDownload() async {
-    // If videos are already downloading, navigate to curriculum page to manage downloads
     if (_curriculumItems.isEmpty) {
       showToast(
         title: trans("No Content"),
@@ -352,11 +350,9 @@ class _PurchasedCourseDetailPageState
       return;
     }
 
-    // Count existing downloaded videos
     int downloadedCount =
         _downloadedVideos.values.where((downloaded) => downloaded).length;
 
-    // Check if any videos are currently downloading or watermarking
     bool isAnyProcessing = false;
     for (int i = 0; i < _curriculumItems.length; i++) {
       final String courseIdStr = _course.id.toString();
@@ -370,13 +366,11 @@ class _PurchasedCourseDetailPageState
       }
     }
 
-    // If any videos are downloading or all videos are already downloaded, go to curriculum page
     if (isAnyProcessing || downloadedCount == _curriculumItems.length) {
       _navigateToCurriculumPage(0);
       return;
     }
 
-    // If no videos are downloading/queued and there are videos to download, show download all dialog
     bool confirm = await showDialog(
           context: context,
           builder: (BuildContext context) {
@@ -407,20 +401,18 @@ class _PurchasedCourseDetailPageState
     if (!confirm) return;
 
     try {
-      // Get username for watermarking
       String username = "User";
       String email = "";
       try {
         var user = await Auth.data();
         if (user != null) {
-          username = user['full_name']() ?? "User";
+          username = user['full_name'] ?? "User";
           email = user['email'] ?? "";
         }
       } catch (e) {
         NyLogger.error('Error getting username: $e');
       }
 
-      // Use the batch download method in VideoService
       bool success = await _videoService.downloadAllVideos(
         courseId: _course.id.toString(),
         course: _course,
@@ -430,7 +422,6 @@ class _PurchasedCourseDetailPageState
       );
 
       if (success) {
-        // Show success message
         showToast(
           title: trans("Success"),
           description: trans(
@@ -440,7 +431,6 @@ class _PurchasedCourseDetailPageState
           duration: Duration(seconds: 4),
         );
 
-        // Wait a moment then refresh status
         Future.delayed(Duration(seconds: 1), () {
           _checkDownloadedVideos();
         });
@@ -469,15 +459,10 @@ class _PurchasedCourseDetailPageState
       body: SafeArea(
         child: Column(
           children: [
-            // Course Banner and Header
             _buildCourseHeader(),
-
-            // Course Videos List
             Expanded(
               child: _buildCourseContent(),
             ),
-
-            // Bottom Navigation
             _buildBottomNavigation(),
           ],
         ),
@@ -488,7 +473,6 @@ class _PurchasedCourseDetailPageState
   Widget _buildCourseHeader() {
     return Stack(
       children: [
-        // Banner Image with Gradient Overlay
         CachedNetworkImage(
           imageUrl: _course.image,
           imageBuilder: (context, imageProvider) => Container(
@@ -619,8 +603,6 @@ class _PurchasedCourseDetailPageState
             ),
           ),
         ),
-
-        // Back Button
         Positioned(
           top: 8,
           left: 8,
@@ -635,8 +617,6 @@ class _PurchasedCourseDetailPageState
             ),
           ),
         ),
-
-        // Download Button
         Positioned(
           top: 8,
           right: 8,
@@ -663,7 +643,6 @@ class _PurchasedCourseDetailPageState
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Course Title and Progress
         Padding(
           padding: const EdgeInsets.all(16.0),
           child: Column(
@@ -691,8 +670,7 @@ class _PurchasedCourseDetailPageState
                   ),
                 ],
               ),
-              SizedBox(height: .0),
-              // Progress bar
+              SizedBox(height: 8),
               ClipRRect(
                 borderRadius: BorderRadius.circular(2),
                 child: LinearProgressIndicator(
@@ -710,11 +688,53 @@ class _PurchasedCourseDetailPageState
                   color: Colors.grey.shade700,
                 ),
               ),
+              if (!_hasValidSubscription)
+                Container(
+                  margin: EdgeInsets.only(top: 8, bottom: 8),
+                  padding: EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.red.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.red, width: 1),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.warning_amber_rounded,
+                          color: Colors.red, size: 20),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          trans(
+                              "Your subscription has expired. Renew to continue accessing the course."),
+                          style: TextStyle(
+                              fontSize: 12, color: Colors.red.shade900),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () {
+                          // Pass curriculum data to avoid API call
+                          routeTo(EnrollmentPlanPage.path, data: {
+                            'course': _course,
+                            'isRenewal': true,
+                            'curriculum': _curriculumItems
+                          });
+                        },
+                        child: Text(
+                          trans("Renew"),
+                          style: TextStyle(fontSize: 12),
+                        ),
+                        style: TextButton.styleFrom(
+                          padding:
+                              EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          minimumSize: Size(60, 24),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
             ],
           ),
         ),
-
-        // Videos Section
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16.0),
           child: Row(
@@ -737,8 +757,6 @@ class _PurchasedCourseDetailPageState
             ],
           ),
         ),
-
-        // Curriculum List
         Expanded(
           child: ListView.builder(
             padding: EdgeInsets.only(top: 8, bottom: 16),
@@ -773,7 +791,6 @@ class _PurchasedCourseDetailPageState
     required bool isCurrent,
     required bool isDownloaded,
   }) {
-    // Check download status from VideoService
     final String courseIdStr = _course.id.toString();
     final String videoIdStr = index.toString();
 
@@ -797,7 +814,6 @@ class _PurchasedCourseDetailPageState
         ),
         child: Row(
           children: [
-            // Lesson Number
             Container(
               width: 24,
               child: Text(
@@ -809,8 +825,6 @@ class _PurchasedCourseDetailPageState
                 ),
               ),
             ),
-
-            // Lesson Title and Duration
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -832,7 +846,6 @@ class _PurchasedCourseDetailPageState
                       color: Colors.grey.shade600,
                     ),
                   ),
-                  // Show download progress if downloading
                   if (isDownloading || isWatermarking)
                     Container(
                       margin: EdgeInsets.only(top: 4),
@@ -845,7 +858,6 @@ class _PurchasedCourseDetailPageState
                         ),
                       ),
                     ),
-                  // Show queued indicator
                   if (isQueued)
                     Padding(
                       padding: const EdgeInsets.only(top: 4.0),
@@ -874,8 +886,6 @@ class _PurchasedCourseDetailPageState
                 ],
               ),
             ),
-
-            // Status Icons
             if (isCompleted)
               Icon(Icons.check_circle, color: Colors.amber, size: 20)
             else if (isDownloading || isWatermarking)
@@ -906,7 +916,6 @@ class _PurchasedCourseDetailPageState
   Widget _buildBottomNavigation() {
     String nextLessonTitle = "Continue Learning";
 
-    // Find the next incomplete lesson
     int nextLessonIndex = _currentLessonIndex;
     for (int i = 0; i < _curriculumItems.length; i++) {
       if (!(_completedLessons[i] ?? false)) {
@@ -915,7 +924,6 @@ class _PurchasedCourseDetailPageState
       }
     }
 
-    // Get title of the next lesson
     if (nextLessonIndex < _curriculumItems.length) {
       nextLessonTitle =
           _curriculumItems[nextLessonIndex]['title'] ?? "Continue Learning";
@@ -935,7 +943,6 @@ class _PurchasedCourseDetailPageState
       ),
       child: Row(
         children: [
-          // Class info
           Expanded(
             child: Row(
               children: [
@@ -955,8 +962,6 @@ class _PurchasedCourseDetailPageState
               ],
             ),
           ),
-
-          // Continue Button
           ElevatedButton(
             onPressed: () => _onStartLesson(nextLessonIndex),
             style: ElevatedButton.styleFrom(

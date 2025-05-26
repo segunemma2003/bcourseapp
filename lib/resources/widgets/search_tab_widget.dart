@@ -64,7 +64,7 @@ class _SearchTabState extends NyState<SearchTab> {
         });
       };
 
-  Future<void> _fetchEnrolledCourses({bool refresh = false}) async {
+  Future<void> _fetchEnrolledCourses() async {
     setLoading(true, name: 'fetch_enrolled_courses');
 
     try {
@@ -369,7 +369,9 @@ class _SearchTabState extends NyState<SearchTab> {
     }
 
     // Navigate directly to enrollment plan page instead of confirming
-    routeTo(EnrollmentPlanPage.path, data: {'course': course});
+    routeTo(CourseDetailPage.path, data: {
+      'course': course,
+    });
   }
 
   @override

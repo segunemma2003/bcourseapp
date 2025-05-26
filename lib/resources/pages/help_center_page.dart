@@ -31,14 +31,14 @@ class _HelpCenterPageState extends NyPage<HelpCenterPage> {
             'title': 'Whatsapp',
             'icon': FontAwesomeIcons.whatsapp,
             'action': 'whatsapp',
-            'value': '+919876543210',
+            'value': '+917090027905',
           },
           {
             'id': '2',
             'title': 'Email',
             'icon': Icons.email_outlined,
             'action': 'email',
-            'value': 'support@example.com',
+            'value': 'contactbybhavani@gmail.com',
           },
         ];
       });

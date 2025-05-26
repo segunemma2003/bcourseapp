@@ -1,12 +1,16 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 import 'package:flutter_app/app/models/course.dart';
 import 'package:flutter_app/app/services/video_service.dart';
+import 'package:permission_handler/permission_handler.dart';
 
+import '../../app/networking/course_api_service.dart';
 import '../widgets/courses_tab_widget.dart';
+import 'enrollment_plan_page.dart';
 
 class CourseCurriculumPage extends NyStatefulWidget {
   static RouteView path = ("/course-curriculum", (_) => CourseCurriculumPage());
@@ -25,6 +29,14 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
   String totalDuration = "";
   int startIndex = 0;
 
+  bool _hasValidSubscription = false;
+  bool _isLifetimeSubscription = false;
+  DateTime? _subscriptionExpiryDate;
+  String _subscriptionStatus = 'not_enrolled';
+  String _subscriptionPlanName = 'Unknown';
+
+// ✅ Subscription validation timer
+  Timer? _subscriptionCheckTimer;
   // Download status tracking
   Map<int, bool> _downloadingStatus = {};
   Map<int, bool> _downloadedStatus = {};
@@ -34,6 +46,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
   Map<int, String> _downloadSpeeds = {};
   Map<int, bool> _queuedStatus = {};
   Map<int, bool> _pausedStatus = {};
+  StreamSubscription? _downloadProgressSubscription;
   Map<int, int> _retryCount = {};
   Map<int, DateTime?> _nextRetryTime = {};
 
@@ -52,6 +65,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
 
   // User information
   String _username = "User";
+  bool _showExpiredBanner = false;
   String _email = "";
 
   // Scroll controller for the ListView
@@ -60,73 +74,324 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
   // Bottom sheet controller
   PersistentBottomSheetController? _bottomSheetController;
 
+  void _extractSubscriptionDetails() {
+    if (course == null) return;
+
+    _hasValidSubscription = course!.hasValidSubscription;
+    _isLifetimeSubscription = course!.isLifetimeSubscription;
+    _subscriptionExpiryDate = course!.subscriptionExpiryDate;
+    _subscriptionStatus = course!.subscriptionStatus;
+    _subscriptionPlanName = course!.subscriptionPlanName;
+  }
+
+  Future<void> _validateSubscriptionStatus() async {
+    if (course == null) return;
+
+    try {
+      // Get fresh course data with enrollment details
+      Course updatedCourse =
+          await CourseApiService().getCourseWithEnrollmentDetails(course!.id);
+
+      if (mounted) {
+        bool wasValid = _hasValidSubscription;
+
+        setState(() {
+          course = updatedCourse;
+          _extractSubscriptionDetails();
+        });
+
+        // If subscription became invalid, show banner
+        if (wasValid && !_hasValidSubscription) {
+          setState(() {
+            _showExpiredBanner = true;
+          });
+          _showSubscriptionExpiredDialog();
+        }
+        // If subscription became valid, hide banner
+        else if (!wasValid && _hasValidSubscription) {
+          setState(() {
+            _showExpiredBanner = false;
+          });
+        }
+      }
+    } catch (e) {
+      NyLogger.error('Error validating subscription status: $e');
+      // Continue with existing data if validation fails
+    }
+  }
+
+  void _showSubscriptionExpiredDialog() {
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Text(trans("Subscription Expired")),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(trans(
+                  "Your subscription to this course has expired during your session.")),
+              SizedBox(height: 8),
+              if (_subscriptionExpiryDate != null)
+                Text(
+                  trans(
+                      "Expired on: ${_subscriptionExpiryDate!.day}/${_subscriptionExpiryDate!.month}/${_subscriptionExpiryDate!.year}"),
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                ),
+              SizedBox(height: 8),
+              Text(trans(
+                  "Please renew your subscription to continue accessing the course content.")),
+            ],
+          ),
+          actions: [
+            TextButton(
+              child: Text(trans("Later")),
+              onPressed: () => Navigator.pop(context),
+            ),
+            TextButton(
+              child: Text(trans("Renew Now")),
+              style: TextButton.styleFrom(foregroundColor: Colors.amber),
+              onPressed: () {
+                Navigator.pop(context);
+                _handleSubscriptionRenewal();
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _handleSubscriptionRenewal() {
+    routeTo(EnrollmentPlanPage.path, data: {
+      'course': course,
+      'curriculum': curriculumItems,
+      'isRenewal': true,
+    });
+  }
+
+// ✅ Show subscription required dialog
+  void _showSubscriptionRequiredDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Text(trans("Valid Subscription Required")),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(trans(
+                  "A valid subscription is required to download and access course content.")),
+              SizedBox(height: 8),
+              if (_subscriptionExpiryDate != null)
+                Text(
+                  trans(
+                      "Your subscription expired on: ${_subscriptionExpiryDate!.day}/${_subscriptionExpiryDate!.month}/${_subscriptionExpiryDate!.year}"),
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                ),
+              SizedBox(height: 8),
+              Text(trans("Please renew your subscription to continue.")),
+            ],
+          ),
+          actions: [
+            TextButton(
+              child: Text(trans("Cancel")),
+              onPressed: () => Navigator.pop(context),
+            ),
+            TextButton(
+              child: Text(trans("Renew Subscription")),
+              style: TextButton.styleFrom(foregroundColor: Colors.amber),
+              onPressed: () {
+                Navigator.pop(context);
+                _handleSubscriptionRenewal();
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _setupSubscriptionValidation() {
+    _subscriptionCheckTimer = Timer.periodic(Duration(minutes: 5), (timer) {
+      if (mounted && course != null) {
+        _validateSubscriptionStatus();
+      }
+    });
+  }
+
+  Future<bool> _validateSubscriptionForDownload() async {
+    if (course == null) return false;
+
+    await _validateSubscriptionStatus();
+
+    if (!_hasValidSubscription) {
+      _showSubscriptionRequiredDialog();
+      return false;
+    }
+
+    return true;
+  }
+
   @override
   void initState() {
     super.initState();
 
-    // Listen for download progress updates
-    _progressSubscription = _videoService.progressStream.listen((update) {
-      if (course == null) return;
+    // Listen for download progress updates with robust error handling
+    _progressSubscription = _videoService.progressStream.listen(
+      (update) {
+        try {
+          if (!mounted || course == null) return;
 
-      if (update.containsKey('courseId') &&
-          update.containsKey('videoId') &&
-          update.containsKey('progress')) {
-        String courseId = update['courseId'];
-        String videoId = update['videoId'];
-        double progress = update['progress'];
-        bool isWatermarking = update['isWatermarking'] ?? false;
-        String statusMessage = update['statusMessage'] ?? "";
-        String downloadSpeed = update['downloadSpeed'] ?? "";
-        String phase = update['phase'] ?? "";
-        int retryCount = update['retryCount'] ?? 0;
-        String? nextRetryTimeStr = update['nextRetryTime'];
-        DateTime? nextRetryTime;
+          if (update.containsKey('courseId') &&
+              update.containsKey('videoId') &&
+              update.containsKey('progress')) {
+            String courseId = update['courseId'];
+            String videoId = update['videoId'];
+            double progress = update['progress'];
+            bool isWatermarking = update['isWatermarking'] ?? false;
+            String statusMessage = update['statusMessage'] ?? "";
+            String downloadSpeed = update['downloadSpeed'] ?? "";
+            String phase = update['phase'] ?? "";
+            int retryCount = update['retryCount'] ?? 0;
+            String? nextRetryTimeStr = update['nextRetryTime'];
+            DateTime? nextRetryTime;
 
-        if (nextRetryTimeStr != null && nextRetryTimeStr.isNotEmpty) {
-          try {
-            nextRetryTime = DateTime.parse(nextRetryTimeStr);
-          } catch (e) {
-            NyLogger.error('Error parsing retry time: $e');
-          }
-        }
-
-        // Only update if this is for our current course
-        if (courseId == course!.id.toString()) {
-          try {
-            int index = int.parse(videoId);
-            if (index >= 0 && index < curriculumItems.length) {
-              setState(() {
-                _downloadProgress[index] = progress;
-
-                // Set status based on phase
-                _downloadingStatus[index] =
-                    phase == 'DownloadPhase.downloading';
-                _watermarkingStatus[index] =
-                    phase == 'DownloadPhase.watermarking';
-                _downloadedStatus[index] = phase == 'DownloadPhase.completed';
-                _queuedStatus[index] = phase == 'DownloadPhase.queued';
-                _pausedStatus[index] = phase == 'DownloadPhase.paused';
-
-                _statusMessages[index] = statusMessage;
-                _downloadSpeeds[index] = downloadSpeed;
-                _retryCount[index] = retryCount;
-                _nextRetryTime[index] = nextRetryTime;
-              });
+            if (nextRetryTimeStr != null && nextRetryTimeStr.isNotEmpty) {
+              try {
+                nextRetryTime = DateTime.parse(nextRetryTimeStr);
+              } catch (e) {
+                NyLogger.error('Error parsing retry time: $e');
+              }
             }
-          } catch (e) {
-            NyLogger.error('Error parsing videoId: $e');
+
+            // Only update if this is for our current course
+            if (courseId == course!.id.toString() && mounted) {
+              try {
+                int index = int.parse(videoId);
+                if (index >= 0 && index < curriculumItems.length) {
+                  setState(() {
+                    _downloadProgress[index] = progress;
+
+                    // Set status based on phase
+                    _downloadingStatus[index] =
+                        phase == 'DownloadPhase.downloading';
+                    _watermarkingStatus[index] =
+                        phase == 'DownloadPhase.watermarking';
+                    _downloadedStatus[index] =
+                        phase == 'DownloadPhase.completed';
+                    _queuedStatus[index] = phase == 'DownloadPhase.queued';
+                    _pausedStatus[index] = phase == 'DownloadPhase.paused';
+
+                    _statusMessages[index] = statusMessage;
+                    _downloadSpeeds[index] = downloadSpeed;
+                    _retryCount[index] = retryCount;
+                    _nextRetryTime[index] = nextRetryTime;
+                  });
+                }
+              } catch (e) {
+                NyLogger.error('Error parsing videoId: $e');
+              }
+            }
+          } else if (update.containsKey('type') &&
+              update['type'] == 'error' &&
+              mounted) {
+            if (update['errorType'] == 'permissionRequired') {
+              _handlePermissionRequired();
+              return;
+            } else if (update['errorType'] == 'permissionPermanentlyDenied') {
+              _handlePermissionPermanentlyDenied();
+              return;
+            } else if (update['errorType'] == 'diskSpace') {
+              _showDiskSpaceError(update['message'] ?? "Not enough disk space");
+            }
           }
+        } catch (e) {
+          NyLogger.error('Error processing progress update: $e');
         }
-      } else if (update.containsKey('type') && update['type'] == 'error') {
-        // Handle global errors like disk space issues
-        if (update['errorType'] == 'diskSpace') {
-          _showDiskSpaceError(update['message'] ?? "Not enough disk space");
-        }
-      }
-    });
+      },
+      onError: (error) {
+        NyLogger.error('Error in progress stream: $error');
+      },
+    );
 
     // Initialize network preferences
     _loadNetworkPreferences();
+    _setupSubscriptionValidation();
+  }
+
+  void _handlePermissionRequired() {
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(trans('Permission Required')),
+        content:
+            Text(trans('Storage permission is needed to download videos.')),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(trans('Cancel')),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              bool granted =
+                  await _videoService.checkAndRequestStoragePermissions();
+              if (granted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(trans(
+                        'Permission granted! You can now download videos.')),
+                    backgroundColor: Colors.green,
+                  ),
+                );
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                        trans('Permission denied. Downloads may not work.')),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+              }
+            },
+            child: Text(trans('Grant Permission')),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _handlePermissionPermanentlyDenied() {
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(trans('Permission Required')),
+        content: Text(trans(
+            'Storage permission has been permanently denied. Please enable it in app settings to download videos.')),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(trans('Cancel')),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              openAppSettings();
+            },
+            child: Text(trans('Open Settings')),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -143,8 +408,19 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
           if (pageData.containsKey('course') && pageData['course'] != null) {
             course = pageData['course'];
             courseName = course?.title ?? "Course Curriculum";
+            _extractSubscriptionDetails();
           } else {
             courseName = "Course Curriculum";
+          }
+
+          if (course != null) {
+            await _validateSubscriptionStatus();
+
+            if (!_hasValidSubscription) {
+              setState(() {
+                _showExpiredBanner = true;
+              });
+            }
           }
 
           // Extract curriculum items
@@ -189,9 +465,11 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
 
           // Get username for watermarking
           try {
+            print("i am here");
             var user = await Auth.data();
+            print(user);
             if (user != null) {
-              _username = user['full_name']() ?? "User";
+              _username = user['full_name'] ?? "User";
               _email = user['email'] ?? "";
             }
           } catch (e) {
@@ -229,6 +507,47 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
           setLoading(false);
         }
       };
+
+  Future<bool> _isNetworkSuitable() async {
+    try {
+      // Check current network status
+      var connectivityResult = await Connectivity().checkConnectivity();
+
+      if (connectivityResult.isEmpty ||
+          connectivityResult.first == ConnectivityResult.none) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(trans("No internet connection available")),
+              backgroundColor: Colors.red,
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
+        return false;
+      }
+
+      // Check if current network matches preference
+      if (_currentNetworkPreference == NetworkPreference.wifiOnly &&
+          !connectivityResult.contains(ConnectivityResult.wifi)) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(trans("WiFi connection required for downloads")),
+              backgroundColor: Colors.orange,
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
+        return false;
+      }
+
+      return true;
+    } catch (e) {
+      NyLogger.error('Error checking network: $e');
+      return true; // Proceed if we can't check
+    }
+  }
 
   Future<void> _checkConnectivity() async {
     try {
@@ -590,39 +909,86 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
     try {
       // Load saved progress from storage
       String key = 'course_progress_${course!.id}';
-      Map<String, dynamic>? savedProgress = await NyStorage.read(key);
+      dynamic savedProgress = await NyStorage.read(key);
 
-      if (savedProgress != null &&
-          savedProgress.containsKey('completedLessons')) {
-        Map<dynamic, dynamic> savedLessons = savedProgress['completedLessons'];
+      if (savedProgress == null) return;
 
-        // Convert to our format
-        savedLessons.forEach((k, v) {
-          int index = int.tryParse(k.toString()) ?? -1;
-          if (index >= 0 && index < curriculumItems.length) {
-            _completedLessons[index] = v == true;
-          }
-        });
+      Map<String, dynamic> progressMap = {};
+
+      if (savedProgress is String) {
+        try {
+          // Try to parse as JSON
+          progressMap = jsonDecode(savedProgress);
+        } catch (e) {
+          NyLogger.error('Error parsing progress string: $e');
+          return;
+        }
+      } else if (savedProgress is Map) {
+        // Already a Map, convert to the right type
+        progressMap = Map<String, dynamic>.from(savedProgress);
+      } else {
+        NyLogger.error(
+            'Unexpected progress data type: ${savedProgress.runtimeType}');
+        return;
+      }
+
+      if (progressMap.containsKey('completedLessons')) {
+        dynamic savedLessons = progressMap['completedLessons'];
+
+        if (savedLessons is Map) {
+          // Convert to our format
+          savedLessons.forEach((k, v) {
+            // Convert key to int safely
+            int? index = int.tryParse(k.toString());
+            if (index != null && index >= 0 && index < curriculumItems.length) {
+              _completedLessons[index] = v == true;
+            }
+          });
+        }
       }
     } catch (e) {
       NyLogger.error('Error loading lesson completion status: $e');
     }
   }
 
+  // Improved _saveProgress with proper encoding
   Future<void> _saveProgress() async {
     if (course == null) return;
 
     try {
       // Get existing progress data first
       String key = 'course_progress_${course!.id}';
-      Map<String, dynamic>? savedProgress = await NyStorage.read(key) ?? {};
+      dynamic existingData = await NyStorage.read(key);
 
-      // Update the completed lessons
-      savedProgress?['completedLessons'] = _completedLessons;
-      savedProgress?['lastUpdated'] = DateTime.now().toIso8601String();
+      Map<String, dynamic> progressData = {};
 
-      // Save back to storage
-      await NyStorage.save(key, savedProgress);
+      // Parse existing data if available
+      if (existingData != null) {
+        if (existingData is String) {
+          try {
+            progressData = jsonDecode(existingData);
+          } catch (e) {
+            NyLogger.error('Error parsing existing progress data: $e');
+            // Continue with empty map rather than failing
+          }
+        } else if (existingData is Map) {
+          progressData = Map<String, dynamic>.from(existingData);
+        }
+      }
+
+      // Convert completed lessons to a map with string keys for JSON serialization
+      Map<String, bool> serializedLessons = {};
+      _completedLessons.forEach((key, value) {
+        serializedLessons[key.toString()] = value;
+      });
+
+      // Update the progress data
+      progressData['completedLessons'] = serializedLessons;
+      progressData['lastUpdated'] = DateTime.now().toIso8601String();
+
+      // Save as JSON string to ensure consistent format
+      String jsonData = jsonEncode(progressData);
+      await NyStorage.save(key, jsonData);
 
       // Notify CourseTab about progress change
       updateState(CoursesTab, data: "update_course_progress");
@@ -639,65 +1005,92 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
 
     // Close bottom sheet if open
     _bottomSheetController?.close();
+    _subscriptionCheckTimer?.cancel();
+    _scrollController.dispose();
+    _subscriptionCheckTimer?.cancel();
 
+    _downloadProgressSubscription?.cancel();
+
+    _progressSubscription = null;
+
+    _bottomSheetController?.close();
     super.dispose();
   }
 
   Future<void> _checkDownloadedVideos() async {
     if (course == null) return;
 
-    for (var i = 0; i < curriculumItems.length; i++) {
-      var item = curriculumItems[i];
-      if (item.containsKey('video_url') && item['video_url'] != null) {
-        final String courseIdStr = course!.id.toString();
-        final String videoIdStr = i.toString();
+    const int batchSize = 5; // Process videos in small batches
+    final int totalItems = curriculumItems.length;
 
-        // Check if already downloaded
-        bool isDownloaded = await _videoService.isVideoDownloaded(
-          videoUrl: item['video_url'],
-          courseId: courseIdStr,
-          videoId: videoIdStr,
-        );
+    for (int startIdx = 0; startIdx < totalItems; startIdx += batchSize) {
+      // Process a batch of videos
+      final int endIdx = min(startIdx + batchSize, totalItems);
 
-        // Check if currently downloading
-        bool isDownloading =
-            _videoService.isDownloading(courseIdStr, videoIdStr);
+      for (var i = startIdx; i < endIdx; i++) {
+        var item = curriculumItems[i];
+        if (item.containsKey('video_url') && item['video_url'] != null) {
+          final String courseIdStr = course!.id.toString();
+          final String videoIdStr = i.toString();
 
-        // Check if watermarking
-        bool isWatermarking =
-            _videoService.isWatermarking(courseIdStr, videoIdStr);
+          // Check if already downloaded
+          bool isDownloaded = await _videoService.isVideoDownloaded(
+            videoUrl: item['video_url'],
+            courseId: courseIdStr,
+            videoId: videoIdStr,
+          );
 
-        // Check if queued
-        bool isQueued = _videoService.isQueued(courseIdStr, videoIdStr);
+          // Check if currently downloading
+          bool isDownloading =
+              _videoService.isDownloading(courseIdStr, videoIdStr);
 
-        // Get current progress
-        double progress = 0.0;
-        if (isDownloading || isWatermarking) {
-          progress = _videoService.getProgress(courseIdStr, videoIdStr);
-        } else if (isDownloaded) {
-          progress = 1.0;
-        }
+          // Check if watermarking
+          bool isWatermarking =
+              _videoService.isWatermarking(courseIdStr, videoIdStr);
 
-        // Get detailed status
-        VideoDownloadStatus status =
-            _videoService.getDetailedStatus(courseIdStr, videoIdStr);
-        String statusMessage = status.displayMessage;
+          // Check if queued
+          bool isQueued = _videoService.isQueued(courseIdStr, videoIdStr);
 
-        setState(() {
-          _downloadedStatus[i] =
-              isDownloaded && !isDownloading && !isWatermarking && !isQueued;
-          _downloadingStatus[i] = isDownloading;
-          _watermarkingStatus[i] = isWatermarking;
-          _downloadProgress[i] = progress;
-          _statusMessages[i] = statusMessage;
-
-          if (isDownloading) {
-            _downloadSpeeds[i] =
-                _videoService.getDownloadSpeed(courseIdStr, videoIdStr);
-          } else {
-            _downloadSpeeds[i] = "";
+          // Get current progress
+          double progress = 0.0;
+          if (isDownloading || isWatermarking) {
+            progress = _videoService.getProgress(courseIdStr, videoIdStr);
+          } else if (isDownloaded) {
+            progress = 1.0;
           }
-        });
+
+          // Get detailed status
+          VideoDownloadStatus status =
+              _videoService.getDetailedStatus(courseIdStr, videoIdStr);
+          String statusMessage = status.displayMessage;
+
+          if (mounted) {
+            setState(() {
+              _downloadedStatus[i] = isDownloaded &&
+                  !isDownloading &&
+                  !isWatermarking &&
+                  !isQueued;
+              _downloadingStatus[i] = isDownloading;
+              _watermarkingStatus[i] = isWatermarking;
+              _downloadProgress[i] = progress;
+              _statusMessages[i] = statusMessage;
+              _queuedStatus[i] = isQueued;
+              _pausedStatus[i] = status.isPaused;
+
+              if (isDownloading) {
+                _downloadSpeeds[i] =
+                    _videoService.getDownloadSpeed(courseIdStr, videoIdStr);
+              } else {
+                _downloadSpeeds[i] = "";
+              }
+            });
+          }
+        }
+      }
+
+      // Yield to the UI thread between batches to prevent jank
+      if (endIdx < totalItems) {
+        await Future.delayed(Duration(milliseconds: 10));
       }
     }
   }
@@ -739,28 +1132,76 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
     }
   }
 
+  // Improved _downloadVideo method with better error handling and background processing
   Future<void> _downloadVideo(int index, {bool isRedownload = false}) async {
     if (course == null) return;
-
+    if (!await _validateSubscriptionForDownload()) {
+      return;
+    }
     try {
-      // If already downloading, watermarking, or queued, don't start a new download
-      if ((_downloadingStatus[index] == true ||
-              _watermarkingStatus[index] == true ||
-              _videoService.isQueued(
-                  course!.id.toString(), index.toString())) &&
-          !isRedownload) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(trans("Download already in progress")),
-            backgroundColor: Colors.amber,
-            duration: const Duration(seconds: 2),
-          ),
-        );
+      // IMPORTANT: Reset error state immediately to allow retry
+      bool hasPermission =
+          await _videoService.checkAndRequestStoragePermissions();
+      if (!hasPermission) {
+        // Permission was denied, the error dialog will be shown via the stream
+        // No need to show additional error here
         return;
+      }
+      setState(() {
+        _statusMessages[index] = "";
+      });
+
+      // Get string identifiers
+      final String courseIdStr = course!.id.toString();
+      final String videoIdStr = index.toString();
+
+      // Reset status in VideoService to ensure clean state
+      // This is critical when retrying after a failed download
+      if (isRedownload) {
+        // If explicitly redownloading, we need to delete the file
+        await _videoService.deleteVideo(
+          courseId: courseIdStr,
+          videoId: videoIdStr,
+        );
+
+        setState(() {
+          _downloadedStatus[index] = false;
+          _downloadProgress[index] = 0.0;
+        });
+      } else {
+        // Check current status from service
+        bool isCurrentlyDownloading =
+            _videoService.isDownloading(courseIdStr, videoIdStr);
+        bool isCurrentlyWatermarking =
+            _videoService.isWatermarking(courseIdStr, videoIdStr);
+        bool isCurrentlyQueued =
+            _videoService.isQueued(courseIdStr, videoIdStr);
+
+        // If download already in progress or queued, show message and return
+        if (isCurrentlyDownloading ||
+            isCurrentlyWatermarking ||
+            isCurrentlyQueued) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(trans("Download already in progress")),
+              backgroundColor: Colors.amber,
+              duration: const Duration(seconds: 2),
+            ),
+          );
+          return;
+        }
+
+        // If there was a previous error, we need to cancel the download first to reset state
+        await _videoService.cancelDownload(
+          courseId: courseIdStr,
+          videoId: videoIdStr,
+        );
       }
 
       var item = curriculumItems[index];
-      if (!item.containsKey('video_url') || item['video_url'] == null) {
+      if (!item.containsKey('video_url') ||
+          item['video_url'] == null ||
+          item['video_url'].toString().trim().isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(trans("Video URL not available")),
@@ -771,29 +1212,137 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
         return;
       }
 
-      // Rest of your existing implementation...
-    } catch (e) {
-      NyLogger.error('Error in _downloadVideo: $e');
+      // Verify network connectivity before starting download
+      bool hasConnection = await _checkNetworkConnectivity();
+      if (!hasConnection) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(trans(
+                "No internet connection. Please check your network and try again.")),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+        return;
+      }
+
+      // Log the video URL to help with debugging
+      NyLogger.info('Starting download for video URL: ${item['video_url']}');
+
+      // Update UI immediately to show queued status
       setState(() {
         _downloadingStatus[index] = false;
         _watermarkingStatus[index] = false;
-        _statusMessages[index] =
-            "Download failed: ${e.toString().substring(0, min(e.toString().length, 50))}";
+        _queuedStatus[index] = true;
+        _downloadedStatus[index] =
+            false; // Make sure it's not marked as downloaded
+        _statusMessages[index] = "Preparing to download...";
       });
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(trans("Download failed")),
-          backgroundColor: Colors.red,
-          duration: const Duration(seconds: 3),
-        ),
-      );
+      // Get username for watermarking
+      String username = _username;
+      String email = _email;
+
+      // Launch the download in a microtask to avoid blocking UI
+      Future.microtask(() async {
+        try {
+          // Use a timeout to prevent indefinite waiting
+          bool enqueued = await _videoService
+              .enqueueDownload(
+            videoUrl: item['video_url'],
+            courseId: courseIdStr,
+            videoId: videoIdStr,
+            watermarkText: username,
+            email: email,
+            course: course!,
+            curriculum: curriculumItems,
+            networkPreference: _currentNetworkPreference,
+          )
+              .timeout(Duration(seconds: 30), onTimeout: () {
+            NyLogger.error('Timeout enqueueing download');
+            return false;
+          });
+
+          if (mounted) {
+            if (!enqueued) {
+              setState(() {
+                _queuedStatus[index] = false;
+                _statusMessages[index] = "Failed to start download";
+              });
+
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                      trans("Failed to start download. Please try again.")),
+                  backgroundColor: Colors.red,
+                  duration: const Duration(seconds: 3),
+                ),
+              );
+            } else {
+              // Successfully queued
+              NyLogger.info(
+                  'Successfully queued download for video $videoIdStr in course $courseIdStr');
+
+              // No need to update state here, progress updates will come from the service
+            }
+          }
+        } catch (e) {
+          NyLogger.error('Error enqueueing download: $e');
+          if (mounted) {
+            setState(() {
+              _queuedStatus[index] = false;
+              _statusMessages[index] =
+                  "Error: ${e.toString().substring(0, min(e.toString().length, 50))}";
+            });
+
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(trans("Download error: Please try again")),
+                backgroundColor: Colors.red,
+                duration: const Duration(seconds: 3),
+              ),
+            );
+          }
+        }
+      });
+    } catch (e) {
+      NyLogger.error('Error in _downloadVideo: $e');
+      if (mounted) {
+        setState(() {
+          _downloadingStatus[index] = false;
+          _watermarkingStatus[index] = false;
+          _queuedStatus[index] = false;
+          _statusMessages[index] =
+              "Download failed: ${e.toString().substring(0, min(e.toString().length, 50))}";
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(trans("Download failed. Please try again.")),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<bool> _checkNetworkConnectivity() async {
+    try {
+      var connectivityResult = await Connectivity().checkConnectivity();
+      return connectivityResult.isNotEmpty &&
+          connectivityResult.first != ConnectivityResult.none;
+    } catch (e) {
+      NyLogger.error('Error checking connectivity: $e');
+      return true; // Assume connection exists if we can't check
     }
   }
 
   Future<void> _playVideo(int index) async {
     if (course == null) return;
-
+    if (!await _validateSubscriptionForDownload()) {
+      return;
+    }
     var item = curriculumItems[index];
     bool isDownloaded = _downloadedStatus[index] ?? false;
 
@@ -852,6 +1401,10 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
 
   // Handle video tap with improved status handling
   void _handleVideoTap(int index) {
+    if (!_hasValidSubscription) {
+      _showSubscriptionRequiredDialog();
+      return;
+    }
     bool isDownloaded = _downloadedStatus[index] ?? false;
     bool isDownloading = _downloadingStatus[index] ?? false;
     bool isWatermarking = _watermarkingStatus[index] ?? false;
@@ -1337,7 +1890,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
       try {
         var user = await Auth.data();
         if (user != null) {
-          username = user['full_name']() ?? "User";
+          username = user['full_name'] ?? "User";
           email = user['email'] ?? "";
         }
       } catch (e) {
@@ -1444,6 +1997,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
       ),
       body: Column(
         children: [
+          if (_showExpiredBanner) _buildExpiredSubscriptionBanner(),
           if (!_isOnline)
             Container(
               width: double.infinity,
@@ -1804,6 +2358,57 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
                       ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildExpiredSubscriptionBanner() {
+    return Container(
+      width: double.infinity,
+      color: Colors.red.shade50,
+      padding: EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.error_outline, color: Colors.red, size: 18),
+              SizedBox(width: 8),
+              Text(
+                trans("Subscription Expired"),
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.red,
+                  fontSize: 14,
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: 4),
+          Text(
+            trans(
+                "Your subscription has expired. Please renew to continue accessing the course."),
+            style: TextStyle(fontSize: 12),
+          ),
+          SizedBox(height: 8),
+          ElevatedButton(
+            onPressed: () {
+              // Navigate to renewal page
+              routeTo(EnrollmentPlanPage.path, data: {
+                'course': course,
+                'curriculum': curriculumItems,
+                'isRenewal': true
+              });
+            },
+            child: Text(trans("Renew Subscription")),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              textStyle: TextStyle(fontSize: 12),
+            ),
+          ),
+        ],
       ),
     );
   }

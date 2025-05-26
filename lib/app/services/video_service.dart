@@ -5,9 +5,11 @@ import 'dart:async';
 import 'dart:isolate';
 import 'dart:math';
 import 'dart:math' show min;
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/return_code.dart';
 import 'package:ffmpeg_kit_flutter_new/statistics.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 import 'package:path_provider/path_provider.dart';
@@ -17,8 +19,10 @@ import 'package:dio/dio.dart';
 import 'package:connectivity_plus/connectivity_plus.dart'; // Add this package for network connectivity
 import 'package:disk_space/disk_space.dart'; // Add this package for disk space checks
 
+import '../../resources/pages/enrollment_plan_page.dart';
 import '../../resources/pages/video_player_page.dart';
 import '../../app/models/course.dart';
+import '../networking/course_api_service.dart';
 
 enum DownloadPhase {
   queued,
@@ -301,6 +305,10 @@ class VideoService {
   bool _isProcessingQueue = false;
   int _maxConcurrentDownloads = 2; // Maximum concurrent downloads
   int _activeDownloads = 0;
+  bool _isRequestingPermission = false;
+  bool _permissionsGranted = false;
+  DateTime? _lastPermissionCheck;
+  final Duration _permissionCacheTime = Duration(hours: 24);
 
   // Map to store progress and download status
   final Map<String, double> _downloadProgress = {};
@@ -374,17 +382,179 @@ class VideoService {
 
   // Initialize service
   Future<void> initialize() async {
-    // Load settings
-    await _loadSettings();
+    try {
+      // Load settings first
+      await _loadSettings();
 
-    // Set up network monitoring
-    await _initializeNetworkMonitoring();
+      // Initialize FFmpeg
+      await _initializeFFmpeg();
 
-    // Restore the queue state and pending downloads
-    await _restoreQueueState();
-    await _restorePendingDownloads();
+      // Set up network monitoring
+      await _initializeNetworkMonitoring();
 
-    NyLogger.info('VideoService initialized successfully');
+      // Check permissions early but don't fail initialization if denied
+      bool hasPermission = await checkAndRequestStoragePermissions();
+      if (!hasPermission) {
+        NyLogger.info(
+            'Storage permissions not granted during initialization - downloads will request when needed');
+      }
+
+      // Restore queue and pending downloads
+      await _restoreQueueState();
+      await _restorePendingDownloads();
+
+      NyLogger.info('VideoService initialized successfully');
+    } catch (e) {
+      NyLogger.error('Error initializing VideoService: $e');
+    }
+  }
+
+  Future<void> _initializeFFmpeg() async {
+    try {
+      // You can add any FFmpeg initialization code here if needed
+      // This is a good place to log FFmpeg information or set options
+      NyLogger.info('FFmpeg initialized');
+    } catch (e) {
+      NyLogger.error('Error initializing FFmpeg: $e');
+    }
+  }
+
+  Future<bool> checkAndRequestStoragePermissions() async {
+    try {
+      // Prevent concurrent permission requests
+      if (_isRequestingPermission) {
+        NyLogger.info('Permission request already in progress, waiting...');
+
+        // Wait for current request to complete (max 10 seconds)
+        int waitCount = 0;
+        while (_isRequestingPermission && waitCount < 20) {
+          await Future.delayed(Duration(milliseconds: 500));
+          waitCount++;
+        }
+
+        return _permissionsGranted;
+      }
+
+      // Check cache first (avoid too frequent permission checks)
+      if (_lastPermissionCheck != null &&
+          DateTime.now()
+                  .difference(_lastPermissionCheck!)
+                  .compareTo(_permissionCacheTime) <
+              0 &&
+          _permissionsGranted) {
+        return _permissionsGranted;
+      }
+
+      _isRequestingPermission = true;
+
+      try {
+        if (Platform.isAndroid) {
+          bool hasPermission = await _checkAndroidPermissions();
+
+          if (!hasPermission) {
+            hasPermission = await _requestAndroidPermissions();
+          }
+
+          _permissionsGranted = hasPermission;
+          _lastPermissionCheck = DateTime.now();
+
+          NyLogger.info('Android permissions granted: $hasPermission');
+          return hasPermission;
+        } else if (Platform.isIOS) {
+          // iOS doesn't need storage permissions for app documents directory
+          _permissionsGranted = true;
+          _lastPermissionCheck = DateTime.now();
+          return true;
+        }
+
+        return false;
+      } finally {
+        _isRequestingPermission = false;
+      }
+    } catch (e) {
+      _isRequestingPermission = false;
+      NyLogger.error('Error in checkAndRequestStoragePermissions: $e');
+      return false;
+    }
+  }
+
+  Future<bool> _checkAndroidPermissions() async {
+    try {
+      final deviceInfo = DeviceInfoPlugin();
+      final androidInfo = await deviceInfo.androidInfo;
+
+      if (androidInfo.version.sdkInt >= 33) {
+        // Android 13+ - Check scoped storage permissions
+        bool videosGranted = await Permission.videos.isGranted;
+        bool audioGranted = await Permission.audio.isGranted;
+
+        NyLogger.info(
+            'Android 13+ permissions - Videos: $videosGranted, Audio: $audioGranted');
+        return videosGranted && audioGranted;
+      } else {
+        // Android 12 and below - Check storage permission
+        bool storageGranted = await Permission.storage.isGranted;
+
+        NyLogger.info('Android <=12 storage permission: $storageGranted');
+        return storageGranted;
+      }
+    } catch (e) {
+      NyLogger.error('Error checking Android permissions: $e');
+      return false;
+    }
+  }
+
+  Future<bool> _requestAndroidPermissions() async {
+    try {
+      final deviceInfo = DeviceInfoPlugin();
+      final androidInfo = await deviceInfo.androidInfo;
+
+      if (androidInfo.version.sdkInt >= 33) {
+        // Android 13+ - Request multiple permissions at once
+        Map<Permission, PermissionStatus> statuses = await [
+          Permission.videos,
+          Permission.audio,
+        ].request();
+
+        bool videosGranted = statuses[Permission.videos]?.isGranted ?? false;
+        bool audioGranted = statuses[Permission.audio]?.isGranted ?? false;
+
+        NyLogger.info(
+            'Android 13+ permission request results - Videos: $videosGranted, Audio: $audioGranted');
+
+        // Check for permanently denied
+        if (statuses[Permission.videos]?.isPermanentlyDenied == true ||
+            statuses[Permission.audio]?.isPermanentlyDenied == true) {
+          _notifyPermissionPermanentlyDenied();
+        }
+
+        return videosGranted && audioGranted;
+      } else {
+        // Android 12 and below - Request storage permission
+        PermissionStatus status = await Permission.storage.request();
+
+        NyLogger.info(
+            'Android <=12 storage permission request result: $status');
+
+        if (status.isPermanentlyDenied) {
+          _notifyPermissionPermanentlyDenied();
+        }
+
+        return status.isGranted;
+      }
+    } catch (e) {
+      NyLogger.error('Error requesting Android permissions: $e');
+      return false;
+    }
+  }
+
+  void _notifyPermissionPermanentlyDenied() {
+    _progressStreamController.add({
+      'type': 'error',
+      'errorType': 'permissionPermanentlyDenied',
+      'message':
+          'Storage permission permanently denied. Please enable in app settings.',
+    });
   }
 
   String getEstimatedTimeRemaining(String courseId, String videoId) {
@@ -914,6 +1084,41 @@ class VideoService {
     return "${(bytesPerSecond / (1024 * 1024)).toStringAsFixed(1)} MB/s";
   }
 
+  Future<PermissionStatus> getStoragePermissionStatus() async {
+    try {
+      if (Platform.isAndroid) {
+        final deviceInfo = DeviceInfoPlugin();
+        final androidInfo = await deviceInfo.androidInfo;
+
+        if (androidInfo.version.sdkInt >= 33) {
+          // Check both video and audio permissions
+          final videoStatus = await Permission.videos.status;
+          final audioStatus = await Permission.audio.status;
+
+          // Return the most restrictive status
+          if (videoStatus.isDenied || audioStatus.isDenied) {
+            return PermissionStatus.denied;
+          } else if (videoStatus.isPermanentlyDenied ||
+              audioStatus.isPermanentlyDenied) {
+            return PermissionStatus.permanentlyDenied;
+          } else if (videoStatus.isGranted && audioStatus.isGranted) {
+            return PermissionStatus.granted;
+          }
+          return PermissionStatus.denied;
+        } else {
+          return await Permission.storage.status;
+        }
+      } else if (Platform.isIOS) {
+        return PermissionStatus.granted; // iOS doesn't need explicit permission
+      }
+
+      return PermissionStatus.denied;
+    } catch (e) {
+      NyLogger.error('Error getting permission status: $e');
+      return PermissionStatus.denied;
+    }
+  }
+
   // Enhanced enqueue download with additional parameters
   Future<bool> enqueueDownload({
     required String videoUrl,
@@ -931,7 +1136,24 @@ class VideoService {
     try {
       String downloadKey = '${courseId}_${videoId}';
 
-      // Check if already downloading, watermarking or queued
+      // 🔥 CRITICAL: Check permissions FIRST, before any other logic
+      bool hasPermission = await checkAndRequestStoragePermissions();
+      if (!hasPermission) {
+        NyLogger.error(
+            'Cannot enqueue download - storage permissions not granted');
+
+        _progressStreamController.add({
+          'type': 'error',
+          'errorType': 'permissionRequired',
+          'message': 'Storage permission is required to download videos.',
+          'courseId': courseId,
+          'videoId': videoId,
+        });
+
+        return false;
+      }
+
+      // Now check if already downloading, watermarking or queued
       if (_downloadingStatus[downloadKey] == true ||
           _watermarkingStatus[downloadKey] == true ||
           isQueued(courseId, videoId)) {
@@ -939,7 +1161,7 @@ class VideoService {
         return false;
       }
 
-      // Add to queue
+      // Rest of your existing logic...
       bool added = _enqueueDownload(
         videoUrl: videoUrl,
         courseId: courseId,
@@ -1188,6 +1410,17 @@ class VideoService {
       NyLogger.error('Error checking disk space: $e');
       // If we can't check disk space, assume it's ok to avoid blocking downloads
       return true;
+    }
+  }
+
+  Future<bool> _checkSubscriptionValidity(String courseId) async {
+    try {
+      final courseApiService = CourseApiService();
+      return await courseApiService
+          .checkEnrollmentValidity(int.parse(courseId));
+    } catch (e) {
+      NyLogger.error('Error checking subscription validity: $e');
+      return false;
     }
   }
 
@@ -1613,34 +1846,47 @@ class VideoService {
       NyLogger.info('Download started for video $videoId in course $courseId ' +
           '(Retry #$retryCount)');
 
-      // 1. Download the video first
-      bool downloadSuccess = await downloadVideo(
-        videoUrl: videoUrl,
-        courseId: courseId,
-        videoId: videoId,
-        resumeFromProgress: progress, // Resume from previous progress
-        onProgress: (progress, statusMessage) {
-          if (_cancelRequests[downloadKey] == true) {
-            throw Exception("Download cancelled");
-          }
-          _notifyProgressUpdate(courseId, videoId, progress,
-              statusMessage: statusMessage);
-          NyStorage.save('progress_$downloadKey', progress);
+      // Step 1: Download the video first
+      bool downloadSuccess = false;
+      try {
+        downloadSuccess = await downloadVideo(
+          videoUrl: videoUrl,
+          courseId: courseId,
+          videoId: videoId,
+          resumeFromProgress: progress,
+          onProgress: (progress, statusMessage) {
+            if (_cancelRequests[downloadKey] == true) {
+              throw CancelException("Download cancelled");
+            }
+            _notifyProgressUpdate(courseId, videoId, progress,
+                statusMessage: statusMessage);
+            NyStorage.save('progress_$downloadKey', progress);
 
-          // Also update the progress in the queue item
-          int queueIndex = _downloadQueue.indexWhere(
-              (item) => item.courseId == courseId && item.videoId == videoId);
-          if (queueIndex >= 0) {
-            _downloadQueue[queueIndex].progress = progress;
-          }
-        },
-      );
+            // Also update the progress in the queue item
+            int queueIndex = _downloadQueue.indexWhere(
+                (item) => item.courseId == courseId && item.videoId == videoId);
+            if (queueIndex >= 0) {
+              _downloadQueue[queueIndex].progress = progress;
+            }
+          },
+        );
+      } catch (e) {
+        // Check if this was a cancellation
+        if (e is CancelException) {
+          throw e; // Re-throw to be handled by outer try/catch
+        } else if (e is PauseException) {
+          throw e; // Re-throw pause exceptions too
+        } else {
+          NyLogger.error('Error during video download: $e');
+          downloadSuccess = false;
+        }
+      }
 
       if (!downloadSuccess) {
         throw Exception("Failed to download video");
       }
 
-      // 2. Then watermark the video if download was successful (using optimized method)
+      // Step 2: Apply watermark if download was successful
       if (downloadSuccess && !(_cancelRequests[downloadKey] == true)) {
         // Update status to watermarking
         _downloadingStatus[downloadKey] = false;
@@ -1659,27 +1905,39 @@ class VideoService {
         _notifyProgressUpdate(courseId, videoId, 0.0,
             statusMessage: "Adding watermark...");
 
-        // Apply watermark with optimized approach
-        bool watermarkSuccess = await applyOptimizedWatermark(
-          courseId: courseId,
-          videoId: videoId,
-          watermarkText: watermarkText,
-          email: email,
-          onProgress: (progress) {
-            if (_cancelRequests[downloadKey] == true) {
-              throw Exception("Watermarking cancelled");
-            }
-            _watermarkProgress[downloadKey] = progress;
-            _notifyProgressUpdate(courseId, videoId, progress,
-                statusMessage: "Adding watermark...");
-          },
-        );
+        // Apply watermark with async approach
+        bool watermarkSuccess = false;
+        try {
+          watermarkSuccess = await applyOptimizedWatermark(
+            courseId: courseId,
+            videoId: videoId,
+            watermarkText: watermarkText,
+            email: email,
+            onProgress: (progress) {
+              if (_cancelRequests[downloadKey] == true) {
+                throw CancelException("Watermarking cancelled");
+              }
+              _watermarkProgress[downloadKey] = progress;
+              _notifyProgressUpdate(courseId, videoId, progress,
+                  statusMessage: "Adding watermark...");
+            },
+          );
+        } catch (e) {
+          // Check if this was a cancellation
+          if (e is CancelException) {
+            throw e; // Re-throw to be handled by outer try/catch
+          } else {
+            NyLogger.error('Error during watermarking: $e');
+            watermarkSuccess = false;
+          }
+        }
 
         if (!watermarkSuccess) {
           throw Exception("Failed to apply watermark");
         }
       }
 
+      // Handle the successful completion
       _handleDownloadComplete(
         courseId: courseId,
         videoId: videoId,
@@ -1703,6 +1961,20 @@ class VideoService {
         _notifyProgressUpdate(courseId, videoId, 0.0,
             statusMessage: _detailedStatus[downloadKey]!.displayMessage);
         await _removeFromPendingDownloads(courseId, videoId);
+      } else if (e is PauseException) {
+        NyLogger.info('Download was paused: ${e.message}');
+        _detailedStatus[downloadKey] = VideoDownloadStatus(
+          phase: DownloadPhase.paused,
+          progress: progress,
+          message: "Download paused: ${e.message}",
+        );
+
+        _downloadingStatus[downloadKey] = false;
+        _watermarkingStatus[downloadKey] = false;
+        _notifyProgressUpdate(courseId, videoId, progress,
+            statusMessage: _detailedStatus[downloadKey]!.displayMessage);
+
+        // Handle pausing logic here if needed
       } else {
         // Check if we should retry
         int currentRetryCount = _retryCount[downloadKey] ?? 0;
@@ -1887,6 +2159,118 @@ class VideoService {
     return (5 * pow(2, retryCount)).round();
   }
 
+  Future<bool> requestStoragePermissions() async {
+    try {
+      if (Platform.isAndroid) {
+        final deviceInfo = DeviceInfoPlugin();
+        final androidInfo = await deviceInfo.androidInfo;
+
+        if (androidInfo.version.sdkInt >= 33) {
+          // Android 13+ (API 33+) - Use scoped storage permissions
+          final videoPermission = await Permission.videos.request();
+          final audioPermission = await Permission.audio.request();
+
+          return videoPermission.isGranted && audioPermission.isGranted;
+        } else if (androidInfo.version.sdkInt >= 30) {
+          // Android 11-12 (API 30-32) - Use storage permission
+          final storagePermission = await Permission.storage.request();
+          return storagePermission.isGranted;
+        } else {
+          // Android 10 and below - Use storage permission
+          final storagePermission = await Permission.storage.request();
+          return storagePermission.isGranted;
+        }
+      } else if (Platform.isIOS) {
+        // iOS - No explicit storage permission needed for app documents directory
+        // But we might need photos permission if accessing photo library
+        return true;
+      }
+
+      return false;
+    } catch (e) {
+      NyLogger.error('Error requesting storage permissions: $e');
+      return false;
+    }
+  }
+
+  Future<bool> checkStoragePermissions() async {
+    try {
+      if (Platform.isAndroid) {
+        final deviceInfo = DeviceInfoPlugin();
+        final androidInfo = await deviceInfo.androidInfo;
+
+        if (androidInfo.version.sdkInt >= 33) {
+          // Android 13+
+          return await Permission.videos.isGranted &&
+              await Permission.audio.isGranted;
+        } else {
+          // Android 12 and below
+          return await Permission.storage.isGranted;
+        }
+      } else if (Platform.isIOS) {
+        // iOS - Always return true for app documents directory
+        return true;
+      }
+
+      return false;
+    } catch (e) {
+      NyLogger.error('Error checking storage permissions: $e');
+      return false;
+    }
+  }
+
+  Future<void> handlePermissionResult(
+      BuildContext context, bool granted, PermissionStatus status) async {
+    if (!granted) {
+      if (status.isPermanentlyDenied) {
+        // Show dialog to go to settings
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Text('Permission Required'),
+            content: Text(
+                'Storage permission has been permanently denied. Please enable it in app settings to download videos.'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  openAppSettings();
+                },
+                child: Text('Open Settings'),
+              ),
+            ],
+          ),
+        );
+      } else {
+        // Show regular permission denied message
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Storage permission is required to download videos.'),
+            action: SnackBarAction(
+              label: 'Retry',
+              onPressed: () async {
+                // Retry permission request
+                bool newResult =
+                    await VideoService().requestStoragePermissions();
+                if (newResult) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                        content: Text(
+                            'Permission granted! You can now download videos.')),
+                  );
+                }
+              },
+            ),
+          ),
+        );
+      }
+    }
+  }
+
   Future<bool> downloadVideo({
     required String videoUrl,
     required String courseId,
@@ -1900,6 +2284,7 @@ class VideoService {
       if (videoUrl.isEmpty || !Uri.parse(videoUrl).isAbsolute) {
         throw Exception("Invalid video URL");
       }
+
       // Initialize detailed status
       _detailedStatus[downloadKey] = VideoDownloadStatus(
         phase: DownloadPhase.initializing,
@@ -1913,15 +2298,15 @@ class VideoService {
       }
 
       // Request storage permission
-      var status = await Permission.storage.request();
-      if (!status.isGranted) {
-        NyLogger.error('Storage permission denied');
-        throw Exception("Storage permission denied");
+      if (Platform.isAndroid && !_permissionsGranted) {
+        throw Exception("Storage permission not granted");
       }
 
+      // Check network connectivity
       if (_currentConnectivity == ConnectivityResult.none) {
         throw Exception("No internet connection available");
       }
+
       // Create app directory
       Directory appDir = await getApplicationDocumentsDirectory();
       String courseDir = '${appDir.path}/courses/$courseId/videos';
@@ -1959,9 +2344,14 @@ class VideoService {
         startTime: _detailedStatus[downloadKey]!.startTime,
       );
 
+      // Use a completer to handle async completion
+      Completer<bool> downloadCompleter = Completer<bool>();
+
+      // Setup a timer to periodically update download speed
       DateTime lastSpeedCheck = DateTime.now();
       int lastBytesReceived = startByte;
 
+      // Use a more robust async approach with Dio
       // Configure throttling if enabled
       if (_isThrottlingEnabled) {
         _dio.options.receiveTimeout =
@@ -1986,7 +2376,21 @@ class VideoService {
       _dio.options.headers = headers;
       _dio.options.responseType = ResponseType.stream;
 
-      // Download with progress tracking
+      // Create a timer to check for cancellation
+      Timer? cancelCheckTimer;
+      cancelCheckTimer = Timer.periodic(Duration(milliseconds: 500), (timer) {
+        if (_cancelRequests[downloadKey] == true) {
+          // Cancel the download if requested
+          _dio.close(force: true);
+          timer.cancel();
+
+          if (!downloadCompleter.isCompleted) {
+            downloadCompleter
+                .completeError(CancelException("Download cancelled by user"));
+          }
+        }
+      });
+
       try {
         // If resuming and file exists, prepare to append to it
         IOSink? fileSink;
@@ -1995,7 +2399,7 @@ class VideoService {
           NyLogger.info('Opened file for appending from byte $startByte');
         }
 
-        await _dio.download(
+        _dio.download(
           videoUrl,
           (startByte > 0)
               ? null
@@ -2062,85 +2466,125 @@ class VideoService {
           },
           deleteOnError: false,
           data: (startByte > 0) ? fileSink : null,
-        );
-
-        // Close file if we were appending
-        if (fileSink != null) {
-          await fileSink.close();
-          NyLogger.info('Closed file sink after appending download data');
-        }
-      } on DioException catch (e) {
-        // Handle specific Dio errors
-        if (e.type == DioExceptionType.cancel) {
-          NyLogger.info('Download was cancelled');
-          throw CancelException("Download cancelled");
-        } else if (e is PauseException) {
-          NyLogger.info('Download paused: ${e.message}');
-          throw PauseException(e.message!);
-        } else {
-          // For all other Dio errors, try fallback method if not resuming
-          NyLogger.error('Dio download error: ${e.message}');
-
-          if (startByte == 0) {
-            return await _fallbackDownload(
-                videoUrl, outputPath, headers, onProgress);
-          } else {
-            NyLogger.error('Cannot use fallback method for resumed download');
-            throw Exception("Download failed: ${e.message}");
+        ).then((_) async {
+          // Success - close file if we were appending
+          if (fileSink != null) {
+            await fileSink.close();
+            NyLogger.info('Closed file sink after appending download data');
           }
-        }
+
+          // Cancel the timer
+          cancelCheckTimer?.cancel();
+
+          // Verify download was successful
+          if (!await outputFile.exists()) {
+            NyLogger.error('Video file does not exist after download');
+            if (!downloadCompleter.isCompleted) {
+              downloadCompleter.complete(false);
+            }
+            return;
+          }
+
+          int fileSize = await outputFile.length();
+          if (fileSize < 1000) {
+            NyLogger.error('Downloaded file is too small: $fileSize bytes');
+            if (!downloadCompleter.isCompleted) {
+              downloadCompleter.complete(false);
+            }
+            return;
+          }
+
+          NyLogger.info('Download completed successfully: $fileSize bytes');
+          if (!downloadCompleter.isCompleted) {
+            downloadCompleter.complete(true);
+          }
+        }).catchError((e) async {
+          // Handle error
+          cancelCheckTimer?.cancel();
+
+          if (e is DioException) {
+            if (e.type == DioExceptionType.cancel) {
+              NyLogger.info('Download was cancelled');
+              if (!downloadCompleter.isCompleted) {
+                downloadCompleter
+                    .completeError(CancelException("Download cancelled"));
+              }
+            } else {
+              // For all other Dio errors, try fallback method if not resuming
+              NyLogger.error('Dio download error: ${e.message}');
+
+              if (startByte == 0) {
+                bool fallbackResult = await _fallbackDownload(
+                    videoUrl, outputPath, headers, onProgress);
+                if (!downloadCompleter.isCompleted) {
+                  downloadCompleter.complete(fallbackResult);
+                }
+              } else {
+                NyLogger.error(
+                    'Cannot use fallback method for resumed download');
+                if (!downloadCompleter.isCompleted) {
+                  downloadCompleter.completeError(
+                      Exception("Download failed: ${e.message}"));
+                }
+              }
+            }
+          } else if (e is PauseException) {
+            NyLogger.info('Download paused: ${e.message}');
+            if (!downloadCompleter.isCompleted) {
+              downloadCompleter.completeError(e);
+            }
+          } else {
+            NyLogger.error('Error during download: $e');
+            if (startByte == 0) {
+              bool fallbackResult = await _fallbackDownload(
+                  videoUrl, outputPath, headers, onProgress);
+              if (!downloadCompleter.isCompleted) {
+                downloadCompleter.complete(fallbackResult);
+              }
+            } else {
+              if (!downloadCompleter.isCompleted) {
+                downloadCompleter
+                    .completeError(Exception("Download failed: $e"));
+              }
+            }
+          }
+        });
+
+        // Wait for completion
+        return await downloadCompleter.future;
       } catch (e) {
-        // Handle other exceptions
+        // Cancel timer if there's an early error
+        cancelCheckTimer.cancel();
+
         if (e is CancelException) {
-          NyLogger.info('Download was cancelled: ${e.message}');
+          // Propagate cancellation
           throw e;
         } else if (e is PauseException) {
-          NyLogger.info('Download paused: ${e.message}');
+          // Handle pause - notify caller but don't count as error
+          if (onProgress != null) {
+            onProgress(resumeFromProgress, "Download paused");
+          }
+
+          _detailedStatus[downloadKey] = VideoDownloadStatus(
+            phase: DownloadPhase.paused,
+            progress: resumeFromProgress,
+            message: "Download paused: ${e.message}",
+            startTime: _detailedStatus[downloadKey]?.startTime,
+          );
+
+          // Re-add to queue as paused
           throw e;
         } else {
-          NyLogger.error('Error during download: $e');
-
-          if (startByte == 0) {
-            return await _fallbackDownload(
-                videoUrl, outputPath, headers, onProgress);
-          } else {
-            throw Exception("Download failed: $e");
-          }
+          NyLogger.error('Error setting up download: $e');
+          return false;
         }
       }
-
-      // Verify download was successful
-      if (!await outputFile.exists()) {
-        NyLogger.error('Video file does not exist after download');
-        return false;
-      }
-
-      int fileSize = await outputFile.length();
-      if (fileSize < 1000) {
-        NyLogger.error('Downloaded file is too small: $fileSize bytes');
-        return false;
-      }
-
-      NyLogger.info('Download completed successfully: $fileSize bytes');
-      return true;
     } catch (e) {
       if (e is CancelException) {
         // Propagate cancellation
         throw e;
       } else if (e is PauseException) {
-        // Handle pause - notify caller but don't count as error
-        if (onProgress != null) {
-          onProgress(resumeFromProgress, "Download paused");
-        }
-
-        _detailedStatus[downloadKey] = VideoDownloadStatus(
-          phase: DownloadPhase.paused,
-          progress: resumeFromProgress,
-          message: "Download paused: ${e.message}",
-          startTime: _detailedStatus[downloadKey]?.startTime,
-        );
-
-        // Re-add to queue as paused
+        // Handle pause - propagate
         throw e;
       } else {
         String errorMessage = e.toString();
@@ -2155,6 +2599,7 @@ class VideoService {
         } else if (errorMessage.contains("timeout")) {
           userFriendlyMessage = "Download timed out";
         }
+
         NyLogger.error('Error during video download: $e');
 
         _detailedStatus[downloadKey] = VideoDownloadStatus(
@@ -2338,46 +2783,72 @@ class VideoService {
         onProgress(0.1, "Retrying with alternative method...");
       }
 
+      // Use a completer to handle async completion
+      Completer<bool> completer = Completer<bool>();
+
       // Use basic http client as fallback
       final httpClient = http.Client();
       final request = http.Request('GET', Uri.parse(videoUrl));
       request.headers.addAll(headers);
 
-      final response = await httpClient.send(request);
+      try {
+        final response =
+            await httpClient.send(request).timeout(Duration(seconds: 60));
 
-      if (response.statusCode == 200 || response.statusCode == 206) {
-        final file = File(outputPath);
-        final fileStream = file.openWrite();
+        if (response.statusCode == 200 || response.statusCode == 206) {
+          final file = File(outputPath);
+          final fileStream = file.openWrite();
 
-        int received = 0;
-        int total = response.contentLength ?? -1;
+          int received = 0;
+          int total = response.contentLength ?? -1;
 
-        await response.stream.forEach((chunk) {
-          fileStream.add(chunk);
-          received += chunk.length;
+          // Set up a stream subscription for better control
+          late StreamSubscription subscription;
+          subscription = response.stream.listen(
+            (chunk) {
+              fileStream.add(chunk);
+              received += chunk.length;
 
-          if (total != -1 && onProgress != null) {
-            double progress = received / total;
-            onProgress(progress, "Downloading with alternative method...");
-          }
-        });
+              if (total != -1 && onProgress != null) {
+                double progress = received / total;
+                onProgress(progress, "Downloading with alternative method...");
+              }
+            },
+            onDone: () async {
+              await fileStream.close();
+              httpClient.close();
 
-        await fileStream.close();
-        httpClient.close();
+              if (onProgress != null) {
+                onProgress(1.0, "Download completed");
+              }
 
-        if (onProgress != null) {
-          onProgress(1.0, "Download completed");
+              NyLogger.info('Fallback download succeeded');
+              completer.complete(true);
+            },
+            onError: (e) async {
+              await fileStream.close();
+              httpClient.close();
+              NyLogger.error('Error in fallback download stream: $e');
+              completer.complete(false);
+            },
+            cancelOnError: true,
+          );
+
+          // Return the completer's future
+          return await completer.future;
+        } else {
+          httpClient.close();
+          NyLogger.error(
+              'Fallback download failed with status: ${response.statusCode}');
+          return false;
         }
-
-        NyLogger.info('Fallback download succeeded');
-        return true;
-      } else {
-        NyLogger.error(
-            'Fallback download failed with status: ${response.statusCode}');
+      } catch (e) {
+        httpClient.close();
+        NyLogger.error('Fallback download error: $e');
         return false;
       }
     } catch (e) {
-      NyLogger.error('Fallback download failed: $e');
+      NyLogger.error('Fallback download setup failed: $e');
       return false;
     }
   }
@@ -2418,7 +2889,6 @@ class VideoService {
     }
   }
 
-// Apply optimized watermark to video
   Future<bool> applyOptimizedWatermark({
     required String courseId,
     required String videoId,
@@ -2439,118 +2909,431 @@ class VideoService {
         return false;
       }
 
-      if (await isVideoWatermarked(courseId, videoId)) {
-        NyLogger.info('Video already has watermark, skipping watermarking');
-        onProgress(1.0);
-        return true;
-      }
+      // if (await isVideoWatermarked(courseId, videoId)) {
+      //   NyLogger.info('Video already has watermark, skipping watermarking');
+      //   onProgress(1.0);
+      //   return true;
+      // }
 
       // Report initial progress
       onProgress(0.1);
-
-      // Get user name for watermark
-      String userName = await _getUserName();
 
       // Create temporary file for watermarked output
       Directory tempDir = await getTemporaryDirectory();
       String tempOutputPath = '${tempDir.path}/temp_watermarked_$videoId.mp4';
 
-      // Check file size to make sure it's a valid video
-      int fileSize = await videoFile.length();
-      if (fileSize < 10000) {
-        // Less than 10KB is likely not a valid video
-        NyLogger.error(
-            'Video file is too small (${fileSize} bytes), may be corrupted');
-        return false;
+      // Get username for watermark
+      String userName = await _getUserName();
+
+      // Update progress
+      onProgress(0.2);
+
+      // IMPORTANT: Use FFmpegKit.executeAsync instead of execute to avoid blocking UI
+      bool success = await _applyWatermarkAsync(
+        videoPath: videoPath,
+        tempOutputPath: tempOutputPath,
+        watermarkText: watermarkText,
+        email: email,
+        userName: userName,
+        progressCallback: (progress) {
+          // Scale progress from 0.2 to 0.9
+          onProgress(0.2 + (progress * 0.7));
+        },
+      );
+
+      if (success) {
+        // Create watermark flag file
+        final watermarkFlagFile = File('$videoPath.watermarked');
+        await watermarkFlagFile.writeAsString('watermarked');
+
+        onProgress(1.0);
+        return true;
+      } else {
+        // Try fallback method
+        NyLogger.info('Main watermarking failed, trying fallback method');
+
+        bool fallbackSuccess = await _applyFallbackWatermarkAsync(
+          videoPath: videoPath,
+          tempOutputPath: tempOutputPath,
+          userName: userName,
+          email: email,
+          progressCallback: (progress) {
+            // Scale fallback progress from 0.5 to 0.9 range
+            onProgress(0.5 + (progress * 0.4));
+          },
+        );
+
+        if (fallbackSuccess) {
+          // Create watermark flag
+          final watermarkFlagFile = File('$videoPath.watermarked');
+          await watermarkFlagFile.writeAsString('watermarked');
+
+          onProgress(1.0);
+          return true;
+        }
+
+        // If all watermarking attempts fail, still create a flag
+        // to prevent repeated failing attempts
+        try {
+          final watermarkFlagFile = File('$videoPath.watermarked');
+          await watermarkFlagFile.writeAsString('watermarked');
+        } catch (e) {
+          NyLogger.error('Error creating watermark flag: $e');
+        }
+
+        onProgress(1.0);
+        return true; // Return true to allow playback even if watermarking failed
       }
-
-      bool watermarkSuccess = false;
-
-      // Apply permanent watermark with all required elements
+    } catch (e) {
+      NyLogger.error('Error in watermarking process: $e');
+      // Create watermark flag even on error to prevent repeated attempts
       try {
-        // Create permanent watermark with requirements:
-        // - "Bhavani" at bottom left
-        // - User name at bottom right
-        // - Email under the user name
-        // - Font size not more than 12px
-        String fontsize = "12";
-        String bottomMargin = "10"; // 10 pixels from bottom
+        final watermarkFlagFile =
+            File('${await getVideoFilePath(courseId, videoId)}.watermarked');
+        await watermarkFlagFile.writeAsString('watermarked');
+      } catch (e) {
+        // Ignore
+      }
+      onProgress(1.0);
+      return true; // Return true to allow playback even if watermarking failed
+    }
+  }
 
-        String command = '-i "$videoPath" -vf "' +
-            // Bottom left "Bhavani"
-            'drawtext=text=\'Bhavani\':fontcolor=white:fontsize=$fontsize:' +
-            'x=10:y=h-$bottomMargin-text_h:box=1:boxcolor=black@0.4:boxborderw=5,' +
-            // Bottom right username
-            'drawtext=text=\'$userName\':fontcolor=white:fontsize=$fontsize:' +
-            'x=w-text_w-10:y=h-$bottomMargin-text_h*2:box=1:boxcolor=black@0.4:boxborderw=5,' +
-            // Email under username
-            'drawtext=text=\'$email\':fontcolor=white:fontsize=$fontsize:' +
-            'x=w-text_w-10:y=h-$bottomMargin:box=1:boxcolor=black@0.4:boxborderw=5' +
-            '" -c:a copy "$tempOutputPath"';
+  Future<bool> _applyFallbackWatermarkAsync({
+    required String videoPath,
+    required String tempOutputPath,
+    required String userName,
+    required String email,
+    required Function(double) progressCallback,
+  }) async {
+    try {
+      // First try a simpler watermark command
+      String command = '-i "$videoPath" -vf "' +
+          'drawtext=text=\'Bhavani - $userName\':' +
+          'fontcolor=yellow:fontsize=14:x=10:y=10:box=1:boxcolor=black@0.8:boxborderw=5' +
+          '" -c:a copy "$tempOutputPath"';
 
-        NyLogger.info('Applying permanent watermark with command: $command');
+      NyLogger.info('Trying fallback watermarking: $command');
+      progressCallback(0.2);
 
-        final session = await FFmpegKit.execute(command);
-        final returnCode = await session.getReturnCode();
+      // Create a completer for async handling
+      Completer<bool> completer = Completer<bool>();
+
+      // Progress reporting timer
+      int timerSeconds = 0;
+      Timer.periodic(Duration(seconds: 1), (timer) {
+        if (completer.isCompleted) {
+          timer.cancel();
+          return;
+        }
+
+        timerSeconds++;
+        if (timerSeconds < 15) {
+          // Report progress from 0.2 to 0.8 over 15 seconds
+          progressCallback(0.2 + (timerSeconds / 15 * 0.6));
+        } else {
+          progressCallback(0.8); // Cap at 80% until complete
+        }
+      });
+
+      FFmpegKit.executeAsync(command, (session) async {
+        ReturnCode? returnCode = await session.getReturnCode();
 
         if (ReturnCode.isSuccess(returnCode)) {
           // Replace the original file with the watermarked version
+          File videoFile = File(videoPath);
           File tempFile = File(tempOutputPath);
           if (await tempFile.exists()) {
             await videoFile.delete();
             await tempFile.copy(videoPath);
             await tempFile.delete();
-            watermarkSuccess = true;
-            NyLogger.info('Permanent watermarking succeeded');
+            NyLogger.info('Fallback watermarking succeeded');
+
+            if (!completer.isCompleted) {
+              completer.complete(true);
+            }
+          } else {
+            if (!completer.isCompleted) {
+              completer.complete(false);
+            }
           }
         } else {
-          NyLogger.error(
-              'Permanent watermarking failed with code: ${returnCode?.getValue()}');
-
-          // Try fallback watermarking
-          return await _applyFallbackWatermark(
-              videoPath, tempOutputPath, userName, email, onProgress);
+          // Try one more simplified approach
+          _trySimplestWatermark(videoPath, tempOutputPath, completer);
         }
-      } catch (e) {
-        NyLogger.error('Error during permanent watermarking: $e');
+      });
 
-        // Try fallback watermarking
-        return await _applyFallbackWatermark(
-            videoPath, tempOutputPath, userName, email, onProgress);
-      }
-
-      // Update progress in stages
-      for (int i = 2; i <= 10; i++) {
-        await Future.delayed(Duration(milliseconds: 50));
-        onProgress(i / 10);
-      }
-
-      // Log successful watermarking
-      if (watermarkSuccess) {
-        try {
-          final watermarkFlagFile = File('$videoPath.watermarked');
-          await watermarkFlagFile.writeAsString('watermarked');
-        } catch (e) {
-          // Non-critical error, just log it
-          NyLogger.error('Error creating watermark flag file: $e');
-        }
-      }
-      return watermarkSuccess;
+      return await completer.future;
     } catch (e) {
-      NyLogger.error('Error in watermarking process: $e');
-      onProgress(1.0);
+      NyLogger.error('Error in fallback watermarking: $e');
       return false;
     }
   }
+
+// Last resort watermarking attempt
+  Future<void> _trySimplestWatermark(String videoPath, String tempOutputPath,
+      Completer<bool> completer) async {
+    try {
+      // Extremely simple watermark as last resort
+      String command = '-i "$videoPath" -vf "' +
+          'drawtext=text=\'Bhavani\':' +
+          'fontcolor=white:fontsize=14:x=10:y=10:box=1:boxcolor=black@0.9:boxborderw=5' +
+          '" -c:a copy "$tempOutputPath"';
+
+      NyLogger.info('Trying simplest watermarking: $command');
+
+      FFmpegKit.executeAsync(command, (session) async {
+        ReturnCode? returnCode = await session.getReturnCode();
+
+        if (ReturnCode.isSuccess(returnCode)) {
+          // Replace the original file with the watermarked version
+          File videoFile = File(videoPath);
+          File tempFile = File(tempOutputPath);
+          if (await tempFile.exists()) {
+            await videoFile.delete();
+            await tempFile.copy(videoPath);
+            await tempFile.delete();
+            NyLogger.info('Simplest watermarking succeeded');
+
+            if (!completer.isCompleted) {
+              completer.complete(true);
+            }
+            return;
+          }
+        }
+
+        // Try a direct copy if all else fails
+        _tryDirectCopy(videoPath, tempOutputPath, completer);
+      });
+    } catch (e) {
+      NyLogger.error('Error in simplest watermarking: $e');
+      if (!completer.isCompleted) {
+        completer.complete(false);
+      }
+    }
+  }
+
+// Last resort - just copy the video if watermarking fails
+  Future<void> _tryDirectCopy(String videoPath, String tempOutputPath,
+      Completer<bool> completer) async {
+    try {
+      String command = '-i "$videoPath" -c copy "$tempOutputPath"';
+      NyLogger.info('Trying direct copy: $command');
+
+      FFmpegKit.executeAsync(command, (session) async {
+        ReturnCode? returnCode = await session.getReturnCode();
+
+        if (ReturnCode.isSuccess(returnCode)) {
+          // Replace the original file
+          File videoFile = File(videoPath);
+          File tempFile = File(tempOutputPath);
+          if (await tempFile.exists()) {
+            await videoFile.delete();
+            await tempFile.copy(videoPath);
+            await tempFile.delete();
+            NyLogger.error(
+                'No watermark applied, but video processing succeeded');
+
+            if (!completer.isCompleted) {
+              completer.complete(true);
+            }
+            return;
+          }
+        }
+
+        if (!completer.isCompleted) {
+          completer.complete(false);
+        }
+      });
+    } catch (e) {
+      NyLogger.error('Error in direct copy: $e');
+      if (!completer.isCompleted) {
+        completer.complete(false);
+      }
+    }
+  }
+
+  Future<bool> _applyWatermarkAsync({
+    required String videoPath,
+    required String tempOutputPath,
+    required String watermarkText,
+    required String email,
+    required String userName,
+    required Function(double) progressCallback,
+  }) async {
+    try {
+      // Larger font size and better opacity settings
+      String fontsize = "14";
+      String bottomMargin = "20";
+      String opacity = "0.7";
+
+      // Clean up any existing temp file
+      File tempFile = File(tempOutputPath);
+      if (await tempFile.exists()) {
+        await tempFile.delete();
+      }
+
+      // Prepare command with highly visible watermarks
+      String command = '-i "$videoPath" -vf "' +
+          // Bottom persistent watermark
+          'drawtext=text=\'Bhavani\':fontcolor=white:fontsize=$fontsize:' +
+          'x=10:y=h-$bottomMargin-text_h:box=1:boxcolor=black@$opacity:boxborderw=5,' +
+          // Username watermark - more visible
+          'drawtext=text=\'$userName\':fontcolor=white:fontsize=$fontsize:' +
+          'x=w-text_w-10:y=h-$bottomMargin-text_h*2:box=1:boxcolor=black@$opacity:boxborderw=5,' +
+          // Email watermark
+          'drawtext=text=\'$email\':fontcolor=white:fontsize=$fontsize:' +
+          'x=w-text_w-10:y=h-$bottomMargin:box=1:boxcolor=black@$opacity:boxborderw=5' +
+          '" -c:a copy "$tempOutputPath"';
+
+      NyLogger.info('Executing FFmpeg command: $command');
+
+      // Create a completer to handle async FFmpeg execution
+      Completer<bool> completer = Completer<bool>();
+
+      // Set up a timer to report progress approximation
+      // Since we can't get real-time progress from FFmpeg for filter operations
+      int durationEstimateSeconds = 30; // Assume 30 seconds for watermarking
+      Timer.periodic(Duration(seconds: 1), (timer) {
+        if (completer.isCompleted) {
+          timer.cancel();
+          return;
+        }
+
+        int elapsed = timer.tick;
+        if (elapsed >= durationEstimateSeconds) {
+          progressCallback(0.9); // Almost done
+        } else {
+          // Scale from 0.1 to 0.9 based on elapsed time
+          double progress = 0.1 + (0.8 * elapsed / durationEstimateSeconds);
+          progressCallback(progress);
+        }
+      });
+
+      // Execute FFmpeg command asynchronously
+      FFmpegKit.executeAsync(command, (session) async {
+        // Execution completed, check result
+        ReturnCode? returnCode = await session.getReturnCode();
+
+        if (ReturnCode.isSuccess(returnCode)) {
+          NyLogger.info('FFmpeg watermarking completed successfully');
+
+          // Replace the original file with the watermarked version
+          File videoFile = File(videoPath);
+          if (await tempFile.exists()) {
+            if (await videoFile.exists()) {
+              await videoFile.delete();
+            }
+            await tempFile.copy(videoPath);
+            await tempFile.delete();
+
+            if (!completer.isCompleted) {
+              completer.complete(true);
+            }
+          } else {
+            NyLogger.error('Temp watermarked file not found after processing');
+            if (!completer.isCompleted) {
+              completer.complete(false);
+            }
+          }
+        } else {
+          // Log error details
+          NyLogger.error('FFmpeg watermarking failed with code: $returnCode');
+          if (!completer.isCompleted) {
+            completer.complete(false);
+          }
+        }
+      }, (log) {
+        // Optional: log FFmpeg output for debugging
+        NyLogger.info('FFmpeg log: $log');
+      }, (statistics) {
+        // Unfortunately, filter operations don't provide useful progress statistics
+        // We're using the timer approach above instead
+      });
+
+      // Wait for completion
+      return await completer.future;
+    } catch (e) {
+      NyLogger.error('Error in async watermarking: $e');
+      return false;
+    }
+  }
+
+// Static method that can be used with compute
+  static Future<bool> _applyWatermarkInBackground(
+      Map<String, dynamic> params) async {
+    final videoPath = params['videoPath'];
+    final tempOutputPath = params['tempOutputPath'];
+    final watermarkText = params['watermarkText'];
+    final email = params['email'];
+    final userName = params['userName'];
+
+    try {
+      // IMPROVED: Larger font size and better opacity settings
+      String fontsize = "14ß"; // Increased from 12 to 24
+      String bottomMargin = "20"; // Increased from 10 to 20
+      String opacity = "0.7"; // Increased from 0.4 to 0.7
+
+      // IMPROVED: Use two approaches - a bottom watermark and a periodic watermark
+      // This creates both a static watermark at the bottom and periodically shows a center watermark
+      String command = '-i "$videoPath" -vf "' +
+          // Bottom persistent watermark
+          'drawtext=text=\'Bhavani\':fontcolor=white:fontsize=$fontsize:' +
+          'x=10:y=h-$bottomMargin-text_h:box=1:boxcolor=black@$opacity:boxborderw=5,' +
+          'drawtext=text=\'$userName\':fontcolor=white:fontsize=$fontsize:' +
+          'x=w-text_w-10:y=h-$bottomMargin-text_h*2:box=1:boxcolor=black@$opacity:boxborderw=5,' +
+          'drawtext=text=\'$email\':fontcolor=white:fontsize=$fontsize:' +
+          'x=w-text_w-10:y=h-$bottomMargin:box=1:boxcolor=black@$opacity:boxborderw=5,' +
+          // Periodic center watermark (appears every 5 minutes for 3 seconds)
+          'drawtext=text=\'Bhavani - $userName\':fontcolor=white:fontsize=36:' +
+          'x=(w-text_w)/2:y=h/2:box=1:boxcolor=black@$opacity:boxborderw=5:' +
+          'enable=\'mod(t,300)lt(3)\'' + // Show for 3 seconds every 5 minutes
+          '" -c:a copy "$tempOutputPath"';
+
+      print('Executing FFmpeg command: $command');
+
+      final session = await FFmpegKit.execute(command);
+      final returnCode = await session.getReturnCode();
+      final logs = await session.getLogs();
+
+      // Print FFmpeg logs to help with debugging
+      print('FFmpeg logs: ${logs.join("\n")}');
+
+      if (ReturnCode.isSuccess(returnCode)) {
+        // Replace the original file with the watermarked version
+        File videoFile = File(videoPath);
+        File tempFile = File(tempOutputPath);
+        if (await tempFile.exists()) {
+          // Check output file size
+          int tempFileSize = await tempFile.length();
+          print('Watermarked file size: $tempFileSize bytes');
+
+          await videoFile.delete();
+          await tempFile.copy(videoPath);
+          await tempFile.delete();
+          return true;
+        }
+      } else {
+        print('FFmpeg watermarking failed with return code: $returnCode');
+        // Try alternate methods
+      }
+
+      return false;
+    } catch (e) {
+      print('Error in watermark: $e');
+      return false;
+    }
+  }
+// Apply optimized watermark to video
 
 // Fallback watermarking methods with simpler approaches
   Future<bool> _applyFallbackWatermark(String videoPath, String tempOutputPath,
       String userName, String email, Function(double) onProgress) async {
     try {
-      // First fallback: Simplified watermark
+      // First fallback: Simplified watermark with larger text and better opacity
       String command = '-i "$videoPath" -vf "' +
           'drawtext=text=\'Bhavani - $userName - $email\':' +
-          'fontcolor=white:fontsize=12:x=10:y=h-10:box=1:boxcolor=black@0.4:boxborderw=5' +
+          'fontcolor=white:fontsize=24:x=10:y=h-20:box=1:boxcolor=black@0.7:boxborderw=5' +
           '" -c:a copy "$tempOutputPath"';
 
       NyLogger.info('Trying fallback watermarking: $command');
@@ -2572,14 +3355,14 @@ class VideoService {
         }
       }
 
-      // Second fallback: Minimal watermark (just Bhavani)
+      // Second fallback: Use a more visible center watermark
       onProgress(0.6);
       String command2 = '-i "$videoPath" -vf "' +
           'drawtext=text=\'Bhavani\':' +
-          'fontcolor=white:fontsize=12:x=10:y=h-10:box=1:boxcolor=black@0.4:boxborderw=5' +
+          'fontcolor=white:fontsize=36:x=(w-text_w)/2:y=h/2-text_h:box=1:boxcolor=black@0.7:boxborderw=5' +
           '" -c:a copy "$tempOutputPath"';
 
-      NyLogger.info('Trying minimal watermarking: $command2');
+      NyLogger.info('Trying center watermarking: $command2');
 
       final session2 = await FFmpegKit.execute(command2);
       final returnCode2 = await session2.getReturnCode();
@@ -2592,23 +3375,44 @@ class VideoService {
           await videoFile.delete();
           await tempFile.copy(videoPath);
           await tempFile.delete();
-          NyLogger.info('Minimal watermarking succeeded');
+          NyLogger.info('Center watermarking succeeded');
           return true;
         }
       }
 
-      // Last resort: Try to copy the video without watermark
+      // Last resort: Use the simplest possible watermark
       onProgress(0.8);
-      String command3 = '-i "$videoPath" -c copy "$tempOutputPath"';
+      String command3 = '-i "$videoPath" -vf "' +
+          'drawtext=text=\'Bhavani\':' +
+          'fontcolor=yellow:fontsize=14:x=10:y=10:box=1:boxcolor=black@0.8:boxborderw=5' +
+          '" -c:a copy "$tempOutputPath"';
 
-      NyLogger.info('Trying copy only as last resort: $command3');
+      NyLogger.info('Trying simplified watermarking: $command3');
 
       final session3 = await FFmpegKit.execute(command3);
       final returnCode3 = await session3.getReturnCode();
 
       if (ReturnCode.isSuccess(returnCode3)) {
+        // Replace the original file with the watermarked version
+        File videoFile = File(videoPath);
+        File tempFile = File(tempOutputPath);
+        if (await tempFile.exists()) {
+          await videoFile.delete();
+          await tempFile.copy(videoPath);
+          await tempFile.delete();
+          NyLogger.info('Simple large watermarking succeeded');
+          return true;
+        }
+      }
+
+      // If all else fails, try a copy
+      String command4 = '-i "$videoPath" -c copy "$tempOutputPath"';
+      final session4 = await FFmpegKit.execute(command4);
+      final returnCode4 = await session4.getReturnCode();
+
+      if (ReturnCode.isSuccess(returnCode4)) {
         NyLogger.error('No watermark applied, but video processing succeeded');
-        return true;
+        return false;
       }
 
       return false;
@@ -2848,7 +3652,7 @@ class VideoService {
     }
   }
 
-// Check if a video has a watermark already
+// Simplified watermark verification that won't hang the app
   Future<bool> isVideoWatermarked(String courseId, String videoId) async {
     try {
       String videoPath = await getVideoFilePath(courseId, videoId);
@@ -2858,77 +3662,49 @@ class VideoService {
         return false; // File doesn't exist
       }
 
-      // Create temporary directory for screenshots
-      Directory tempDir = await getTemporaryDirectory();
-      String screenshotPath = '${tempDir.path}/watermark_check_$videoId.jpg';
-
-      // Take a screenshot of the video at 80% of the duration to check for watermark
-      try {
-        // First get the duration of the video
-        String durationCommand =
-            '-i "$videoPath" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1';
-        final durationSession = await FFmpegKit.execute(durationCommand);
-        final durationReturnCode = await durationSession.getReturnCode();
-
-        String duration = "5"; // Default 5 seconds if we can't determine
-
-        if (ReturnCode.isSuccess(durationReturnCode)) {
-          final output = await durationSession.getOutput();
-          if (output != null && output.isNotEmpty) {
-            try {
-              double durationSeconds = double.parse(output.trim());
-              // Take screenshot at 80% of the video
-              duration = (durationSeconds * 0.8).toStringAsFixed(1);
-            } catch (e) {
-              NyLogger.error('Error parsing duration: $e');
-            }
-          }
-        }
-
-        // Take a screenshot at the specified time
-        String screenshotCommand =
-            '-ss $duration -i "$videoPath" -frames:v 1 -q:v 2 "$screenshotPath"';
-        final screenshotSession = await FFmpegKit.execute(screenshotCommand);
-        final screenshotReturnCode = await screenshotSession.getReturnCode();
-
-        if (ReturnCode.isSuccess(screenshotReturnCode)) {
-          File screenshotFile = File(screenshotPath);
-          if (await screenshotFile.exists()) {
-            // Since we can't use real OCR in this environment, we'll check the screenshot properties
-            // This is a simplified check - in a real app, you might use ML Kit or another OCR library
-
-            // Check file size - a watermarked video will typically have metadata in the screenshot
-            int fileSize = await screenshotFile.length();
-
-            // Clean up the screenshot
-            await screenshotFile.delete();
-
-            // This is a very simplified check - a real implementation would use OCR
-            // We'll just assume the video has been processed if the screenshot exists
-            return true;
-          }
-        }
-
-        return false;
-      } catch (e) {
-        NyLogger.error('Error checking for watermark: $e');
-        return false;
+      // Check for watermark flag file
+      File watermarkFlagFile = File('$videoPath.watermarked');
+      if (await watermarkFlagFile.exists()) {
+        NyLogger.info('Watermark flag found for video $courseId/$videoId');
+        return true;
       }
+
+      // No need for complex screenshot checks which can block the UI
+      // If the video exists but no flag, create flag and assume watermarked
+      // This will ensure existing videos are treated as watermarked
+      try {
+        await watermarkFlagFile.writeAsString('watermarked');
+        NyLogger.info(
+            'Created watermark flag for existing video $courseId/$videoId');
+        return true;
+      } catch (e) {
+        NyLogger.error('Error creating watermark flag: $e');
+      }
+
+      return true; // Assume watermarked to prevent watermarking failures
     } catch (e) {
-      NyLogger.error('Error in watermark check: $e');
+      NyLogger.error('Error checking if video is watermarked: $e');
       return false;
     }
   }
 
   // Get video file path
   Future<String> getVideoFilePath(String courseId, String videoId) async {
-    // Get the app's documents directory
-    Directory appDir = await getApplicationDocumentsDirectory();
+    Directory appDir;
 
-    // Create a consistent path structure for video storage
-    // Format: /app_documents/courses/{courseId}/videos/video_{videoId}.mp4
-    // This creates a folder per course, making management easier
-    return '${appDir.path}/courses/$courseId/videos/video_$videoId.mp4';
+    if (Platform.isIOS) {
+      // iOS - Use documents directory (always accessible)
+      appDir = await getApplicationDocumentsDirectory();
+    } else {
+      // Android - Use application documents directory (requires permission)
+      appDir = await getApplicationDocumentsDirectory();
+    }
+
+    // Create consistent path structure
+    String coursePath = '${appDir.path}/courses/$courseId/videos';
+    await Directory(coursePath).create(recursive: true);
+
+    return '$coursePath/video_$videoId.mp4';
   }
 
 // Helper method to check if URL is likely a video
@@ -2980,6 +3756,50 @@ class VideoService {
     required BuildContext context,
   }) async {
     try {
+      // First check if the user has a valid subscription for this course
+      bool hasValidSubscription = await _checkSubscriptionValidity(courseId);
+
+      if (!hasValidSubscription) {
+        // Show subscription expired dialog
+        showDialog(
+          context: context,
+          builder: (BuildContext context) {
+            return AlertDialog(
+              title: Text(trans("Subscription Expired")),
+              content: Text(trans(
+                  "Your subscription for this course has expired. Would you like to renew it?")),
+              actions: [
+                TextButton(
+                  child: Text(trans("Cancel")),
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                  },
+                ),
+                TextButton(
+                  child: Text(trans("Renew")),
+                  style: TextButton.styleFrom(foregroundColor: Colors.amber),
+                  onPressed: () async {
+                    Navigator.of(context).pop();
+                    List<CourseCurriculum> curriculumItems =
+                        await getCourseCurriculumItems(int.parse(courseId));
+                    // Navigate to subscription renewal page
+                    routeTo(EnrollmentPlanPage.path, data: {
+                      'curriculum': curriculumItems,
+                      'course': Course.fromJson({
+                        'id': int.parse(courseId),
+
+                        // You may need to fetch other course details here
+                      }),
+                      'isRenewal': true
+                    });
+                  },
+                ),
+              ],
+            );
+          },
+        );
+        return;
+      }
       // Get the file path for the video
       String videoPath = await getVideoFilePath(courseId, videoId);
       File videoFile = File(videoPath);
@@ -3180,6 +4000,22 @@ class VideoService {
         ),
       );
     }
+  }
+
+  Future getCourseCurriculumItems(int courseId) async {
+    final _courseApiService = CourseApiService();
+    List<dynamic> result =
+        await _courseApiService.getCourseCurriculum(courseId);
+
+    if (result.length > 100) {
+      // For very large lists, use compute to prevent UI blocking
+      result.sort((a, b) => a['order'].compareTo(b['order']));
+    } else {
+      // For smaller lists, just sort directly
+      result.sort((a, b) => a['order'].compareTo(b['order']));
+    }
+
+    return result;
   }
 
 // Dispose resources

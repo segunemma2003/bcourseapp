@@ -9,7 +9,6 @@ import '../../app/networking/course_api_service.dart';
 class CoursesTab extends StatefulWidget {
   const CoursesTab({super.key});
 
-  // Define state name for Nylo's state management
   static String state = '/courses_tab';
 
   @override
@@ -21,11 +20,14 @@ class _CoursesTabState extends NyState<CoursesTab> {
   bool _hasCourses = false;
   bool _isAuthenticated = false;
 
-  // Progress tracking for each course
+  // Store curriculum data to avoid repeated API calls
+  Map<String, List<dynamic>> _curriculumCache = {};
+  Map<String, List<dynamic>> _objectivesCache = {};
+  Map<String, List<dynamic>> _requirementsCache = {};
+
   Map<String, double> _courseProgress = {};
   Map<String, int> _courseVideoCount = {};
 
-  // Set state name for Nylo's state management
   _CoursesTabState() {
     stateName = CoursesTab.state;
   }
@@ -39,13 +41,8 @@ class _CoursesTabState extends NyState<CoursesTab> {
   get init => () async {
         super.init();
 
-        // Check authentication first
         _isAuthenticated = await Auth.isAuthenticated();
-
-        // Fetch enrolled courses
         await _fetchEnrolledCourses();
-
-        // Load progress for each course
         await _loadCourseProgress();
       };
 
@@ -70,28 +67,20 @@ class _CoursesTabState extends NyState<CoursesTab> {
 
     for (var course in _enrolledCourses) {
       try {
-        // Load saved progress from storage
         String key = 'course_progress_${course.id}';
-
         var savedProgress = await NyStorage.read(key);
 
         if (savedProgress != null) {
-          // Calculate progress percentage
           var completedLessons = (savedProgress is Map &&
                   savedProgress.containsKey('completedLessons'))
               ? savedProgress['completedLessons']
               : {};
 
-          print(savedProgress);
           var completedCount =
               completedLessons.values.where((v) => v == true).length;
 
-          // Get video counts from CourseApiService or CourseData
-          var curriculumItems = await _fetchCurriculumForCourse(course.id);
-          print(curriculumItems);
-          int totalVideos = curriculumItems.length;
-
-          // Calculate and save progress
+          // Get video count from cache first, then API if needed
+          int totalVideos = await _getCourseVideoCount(course.id);
           double progress =
               totalVideos > 0 ? completedCount / totalVideos : 0.0;
 
@@ -100,19 +89,14 @@ class _CoursesTabState extends NyState<CoursesTab> {
             _courseVideoCount[course.id.toString()] = totalVideos;
           });
         } else {
-          // No progress yet, but still get video count
-          List<dynamic> curriculumItems =
-              await _fetchCurriculumForCourse(course.id);
-
+          int totalVideos = await _getCourseVideoCount(course.id);
           setState(() {
             _courseProgress[course.id.toString()] = 0.0;
-            _courseVideoCount[course.id.toString()] = curriculumItems.length;
+            _courseVideoCount[course.id.toString()] = totalVideos;
           });
         }
       } catch (e) {
         NyLogger.error('Failed to load progress for course ${course.id}: $e');
-
-        // Set defaults if loading fails
         setState(() {
           _courseProgress[course.id.toString()] = 0.0;
           _courseVideoCount[course.id.toString()] = 0;
@@ -121,18 +105,27 @@ class _CoursesTabState extends NyState<CoursesTab> {
     }
   }
 
-  Future<List<dynamic>> _fetchCurriculumForCourse(int courseId) async {
-    // This would typically come from your API
-    // For demo purposes, we'll return a list with a length based on courseId
+  Future<int> _getCourseVideoCount(int courseId) async {
+    String cacheKey = courseId.toString();
+
+    // Check cache first
+    if (_curriculumCache.containsKey(cacheKey)) {
+      return _curriculumCache[cacheKey]!.length;
+    }
+
+    // Fetch and cache curriculum
     try {
       var courseApiService = CourseApiService();
       List<dynamic> curriculum =
           await courseApiService.getCourseCurriculum(courseId);
-      return curriculum;
-    } catch (e) {
-      // Fallback to local data in case API fails
 
-      return [];
+      // Cache for future use
+      _curriculumCache[cacheKey] = curriculum;
+
+      return curriculum.length;
+    } catch (e) {
+      NyLogger.error('Error fetching curriculum for course $courseId: $e');
+      return 0;
     }
   }
 
@@ -140,7 +133,6 @@ class _CoursesTabState extends NyState<CoursesTab> {
     setLoading(true, name: 'fetch_enrolled_courses');
 
     try {
-      // If not authenticated, we can't fetch enrolled courses
       if (!_isAuthenticated) {
         setState(() {
           _enrolledCourses = [];
@@ -149,38 +141,37 @@ class _CoursesTabState extends NyState<CoursesTab> {
         return;
       }
 
-      // Use the CourseApiService to fetch enrolled courses
       var courseApiService = CourseApiService();
 
       try {
-        // Fetch enrolled courses from API
         List<dynamic> enrolledCoursesData =
             await courseApiService.getEnrolledCourses();
 
-        // Process the courses
         if (enrolledCoursesData.isNotEmpty) {
           _enrolledCourses = enrolledCoursesData
               .map((data) => Course.fromJson(data['course']))
               .toList();
           _hasCourses = _enrolledCourses.isNotEmpty;
+
+          // Preload curriculum data in background for better UX
+          if (!refresh) {
+            _preloadCourseData();
+          }
         } else {
           _enrolledCourses = [];
           _hasCourses = false;
         }
       } catch (e) {
-        // If API fails, check local storage as fallback
         NyLogger.error('API Error: $e. Checking local storage...');
 
         List<String>? enrolledCourseIds =
             await NyStorage.read('enrolled_course_ids');
 
         if (enrolledCourseIds != null && enrolledCourseIds.isNotEmpty) {
-          // Fetch all courses to find the enrolled ones
           List<dynamic> allCoursesData = await courseApiService.getAllCourses();
           List<Course> allCourses =
               allCoursesData.map((data) => Course.fromJson(data)).toList();
 
-          // Filter to get only enrolled courses
           _enrolledCourses = allCourses
               .where((course) => enrolledCourseIds.contains(course.id))
               .toList();
@@ -191,7 +182,6 @@ class _CoursesTabState extends NyState<CoursesTab> {
         }
       }
 
-      // Load progress data for courses
       await _loadCourseProgress();
     } catch (e) {
       NyLogger.error('Failed to fetch enrolled courses: $e');
@@ -202,7 +192,6 @@ class _CoursesTabState extends NyState<CoursesTab> {
           icon: Icons.error_outline,
           style: ToastNotificationStyleType.danger);
 
-      // Reset state on error
       setState(() {
         _enrolledCourses = [];
         _hasCourses = false;
@@ -212,24 +201,75 @@ class _CoursesTabState extends NyState<CoursesTab> {
     }
   }
 
+  // Preload course data in background for better performance
+  Future<void> _preloadCourseData() async {
+    final courseApiService = CourseApiService();
+
+    for (var course in _enrolledCourses) {
+      String cacheKey = course.id.toString();
+
+      // Skip if already cached
+      if (_curriculumCache.containsKey(cacheKey)) continue;
+
+      // Preload curriculum, objectives, and requirements in parallel
+      Future.wait([
+        courseApiService.getCourseCurriculum(course.id).then((curriculum) {
+          _curriculumCache[cacheKey] = curriculum;
+        }).catchError((e) {
+          NyLogger.error('Error preloading curriculum for ${course.id}: $e');
+        }),
+        courseApiService.getCourseObjectives(course.id).then((objectives) {
+          _objectivesCache[cacheKey] = objectives;
+        }).catchError((e) {
+          NyLogger.error('Error preloading objectives for ${course.id}: $e');
+        }),
+        courseApiService.getCourseRequirements(course.id).then((requirements) {
+          _requirementsCache[cacheKey] = requirements;
+        }).catchError((e) {
+          NyLogger.error('Error preloading requirements for ${course.id}: $e');
+        }),
+      ]);
+    }
+  }
+
   void _onGetStartedPressed() async {
-    // Navigate to search tab
     routeTo(BaseNavigationHub.path, tabIndex: 1);
   }
 
   void _onStartCourse(Course course) {
-    // Navigate to purchased course detail page
-    routeTo(PurchasedCourseDetailPage.path, data: {
+    String cacheKey = course.id.toString();
+
+    // Pass cached data to avoid API calls
+    Map<String, dynamic> courseData = {
       'course': course,
-    });
+    };
+
+    // Add cached curriculum if available
+    if (_curriculumCache.containsKey(cacheKey)) {
+      courseData['curriculum'] = _curriculumCache[cacheKey];
+    }
+
+    // Add cached objectives if available
+    if (_objectivesCache.containsKey(cacheKey)) {
+      courseData['objectives'] = _objectivesCache[cacheKey];
+    }
+
+    // Add cached requirements if available
+    if (_requirementsCache.containsKey(cacheKey)) {
+      courseData['requirements'] = _requirementsCache[cacheKey];
+    }
+
+    routeTo(PurchasedCourseDetailPage.path, data: courseData);
   }
 
   Future<void> _onRefresh() async {
-    // Using Nylo's lockRelease to prevent multiple refreshes
     await lockRelease('refresh_courses', perform: () async {
-      await _fetchEnrolledCourses(refresh: true);
+      // Clear caches on refresh
+      _curriculumCache.clear();
+      _objectivesCache.clear();
+      _requirementsCache.clear();
 
-      // Show success toast
+      await _fetchEnrolledCourses(refresh: true);
       showToastSuccess(description: trans("Courses refreshed successfully"));
     });
   }
@@ -264,7 +304,6 @@ class _CoursesTabState extends NyState<CoursesTab> {
               ),
             ),
             actions: [
-              // Refresh button
               if (_isAuthenticated)
                 IconButton(
                   icon: Icon(Icons.refresh, color: Colors.black87),
@@ -281,7 +320,6 @@ class _CoursesTabState extends NyState<CoursesTab> {
             loadingKey: 'fetch_enrolled_courses',
             child: () => Column(
               children: [
-                // Main Content
                 Expanded(
                   child: _isAuthenticated
                       ? (_hasCourses ? _buildCoursesList() : _buildEmptyState())
@@ -302,8 +340,6 @@ class _CoursesTabState extends NyState<CoursesTab> {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Spacer(flex: 1),
-
-          // Image
           Image.asset(
             "bro.png",
             width: 150,
@@ -320,10 +356,7 @@ class _CoursesTabState extends NyState<CoursesTab> {
               );
             },
           ).localAsset(),
-
           SizedBox(height: 24),
-
-          // Title
           Text(
             trans("Start your journey to becoming a master"),
             style: TextStyle(
@@ -333,10 +366,7 @@ class _CoursesTabState extends NyState<CoursesTab> {
             ),
             textAlign: TextAlign.center,
           ),
-
           SizedBox(height: 8),
-
-          // Subtitle
           Text(
             trans("Get your first course now!"),
             style: TextStyle(
@@ -345,10 +375,7 @@ class _CoursesTabState extends NyState<CoursesTab> {
             ),
             textAlign: TextAlign.center,
           ),
-
           SizedBox(height: 20),
-
-          // Get Started Button
           Container(
             width: double.infinity,
             padding: EdgeInsets.symmetric(horizontal: 16),
@@ -373,7 +400,6 @@ class _CoursesTabState extends NyState<CoursesTab> {
               ),
             ),
           ),
-
           Spacer(flex: 1),
         ],
       ),
@@ -387,8 +413,6 @@ class _CoursesTabState extends NyState<CoursesTab> {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Spacer(flex: 1),
-
-          // Image
           Image.asset(
             "bro.png",
             width: 150,
@@ -405,10 +429,7 @@ class _CoursesTabState extends NyState<CoursesTab> {
               );
             },
           ).localAsset(),
-
           SizedBox(height: 24),
-
-          // Title
           Text(
             trans("Login to access your courses"),
             style: TextStyle(
@@ -418,10 +439,7 @@ class _CoursesTabState extends NyState<CoursesTab> {
             ),
             textAlign: TextAlign.center,
           ),
-
           SizedBox(height: 8),
-
-          // Subtitle
           Text(
             trans("Sign in to view your enrolled courses"),
             style: TextStyle(
@@ -430,10 +448,7 @@ class _CoursesTabState extends NyState<CoursesTab> {
             ),
             textAlign: TextAlign.center,
           ),
-
           SizedBox(height: 20),
-
-          // Login Button
           Container(
             width: double.infinity,
             padding: EdgeInsets.symmetric(horizontal: 16),
@@ -459,10 +474,7 @@ class _CoursesTabState extends NyState<CoursesTab> {
               ),
             ),
           ),
-
           SizedBox(height: 16),
-
-          // Browse Courses Button
           Container(
             width: double.infinity,
             padding: EdgeInsets.symmetric(horizontal: 16),
@@ -485,7 +497,6 @@ class _CoursesTabState extends NyState<CoursesTab> {
               ),
             ),
           ),
-
           Spacer(flex: 1),
         ],
       ),
@@ -493,7 +504,6 @@ class _CoursesTabState extends NyState<CoursesTab> {
   }
 
   Widget _buildCoursesList() {
-    // If there are no courses, show empty state
     if (_enrolledCourses.isEmpty) {
       return _buildEmptyState();
     }
@@ -510,10 +520,9 @@ class _CoursesTabState extends NyState<CoursesTab> {
   }
 
   Widget _buildCourseItem(Course course) {
-    // Get progress from stored data
     double progressPercentage = _courseProgress[course.id.toString()] ?? 0.0;
     int videoCount =
-        _courseVideoCount[course.id.toString()] ?? ((course.id ?? 1) % 10) + 5;
+        _courseVideoCount[course.id.toString()] ?? ((course.id) % 10) + 5;
 
     return Container(
       decoration: BoxDecoration(
@@ -530,11 +539,9 @@ class _CoursesTabState extends NyState<CoursesTab> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Course Image and Info
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Course Image
               ClipRRect(
                 borderRadius: BorderRadius.only(
                   topLeft: Radius.circular(8),
@@ -558,15 +565,12 @@ class _CoursesTabState extends NyState<CoursesTab> {
                   },
                 ),
               ),
-
-              // Course Info
               Expanded(
                 child: Padding(
                   padding: const EdgeInsets.all(12),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Course Title
                       Text(
                         course.title,
                         style: TextStyle(
@@ -576,10 +580,7 @@ class _CoursesTabState extends NyState<CoursesTab> {
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                       ),
-
                       SizedBox(height: 4),
-
-                      // Course Subtitle
                       Text(
                         course.smallDesc,
                         style: TextStyle(
@@ -589,14 +590,10 @@ class _CoursesTabState extends NyState<CoursesTab> {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
-
                       SizedBox(height: 8),
-
-                      // Progress indicator
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // Progress text
                           Text(
                             "${(progressPercentage * 100).toInt()}% ${trans("Complete")}",
                             style: TextStyle(
@@ -605,10 +602,7 @@ class _CoursesTabState extends NyState<CoursesTab> {
                               fontWeight: FontWeight.w500,
                             ),
                           ),
-
                           SizedBox(height: 4),
-
-                          // Progress bar
                           ClipRRect(
                             borderRadius: BorderRadius.circular(2),
                             child: LinearProgressIndicator(
@@ -626,14 +620,11 @@ class _CoursesTabState extends NyState<CoursesTab> {
               ),
             ],
           ),
-
-          // Action Buttons
           Padding(
             padding: const EdgeInsets.all(12),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                // Video Stats
                 Row(
                   children: [
                     Icon(Icons.video_library,
@@ -648,8 +639,6 @@ class _CoursesTabState extends NyState<CoursesTab> {
                     ),
                   ],
                 ),
-
-                // Continue Button
                 ElevatedButton(
                   onPressed: () => _onStartCourse(course),
                   style: ElevatedButton.styleFrom(
@@ -679,7 +668,6 @@ class _CoursesTabState extends NyState<CoursesTab> {
     );
   }
 
-  // Skeleton layout for loading state
   Widget _buildSkeletonLayout() {
     return Scaffold(
       backgroundColor: Colors.grey.shade50,

@@ -1,12 +1,16 @@
 import 'dart:convert';
 
+import 'package:device_info_plus/device_info_plus.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_app/app/networking/cache_invalidation_manager.dart';
 import 'package:flutter_app/utils/system_util.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import '../providers/firebase_service_provider.dart';
 import '/config/decoders.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 import 'dart:io';
-import 'package:image_picker/image_picker.dart';
 import 'package:http_parser/http_parser.dart';
 
 class UserApiService extends NyApiService {
@@ -17,6 +21,7 @@ class UserApiService extends NyApiService {
   String get baseUrl => getEnv('API_BASE_URL') + "/api";
 
   final GoogleSignIn _googleSignIn = GoogleSignIn(scopes: ['email', 'profile']);
+
   Future<dynamic> register({
     required String email,
     required String password,
@@ -43,6 +48,38 @@ class UserApiService extends NyApiService {
             if (responseData['user'] != null) {
               await storageSave("user", responseData['user']);
               await Auth.authenticate(data: responseData['user']);
+
+              try {
+                // Get FCM token and register device - make non-blocking
+                String? fcmToken = await backpackRead('fcm_token');
+                if (fcmToken == null) {
+                  fcmToken = await FirebaseMessaging.instance.getToken();
+                  if (fcmToken != null) {
+                    await backpackSave('fcm_token', fcmToken);
+                  }
+                }
+
+                if (fcmToken != null) {
+                  // Make device registration non-blocking
+                  registerDeviceWithBackend(fcmToken).catchError((e) {
+                    NyLogger.error(
+                        'Device registration error (non-blocking): $e');
+                  });
+                }
+
+                // Make topic subscription non-blocking
+                FirebaseServiceProvider.subscribeToUserTopics().catchError((e) {
+                  NyLogger.error('Topic subscription error (non-blocking): $e');
+                });
+                await CacheInvalidationManager.onUserLogin();
+                // Make data preloading non-blocking
+                preloadEssentialData().catchError((e) {
+                  NyLogger.error('Data preloading error (non-blocking): $e');
+                });
+              } catch (e) {
+                // Log but don't block registration flow for notification setup errors
+                NyLogger.error('Non-critical error during registration: $e');
+              }
             }
           }
           return responseData;
@@ -82,18 +119,43 @@ class UserApiService extends NyApiService {
         handleSuccess: (Response response) async {
           // Store user token and data
           final responseData = response.data;
-          print(responseData);
           if (responseData['key'] != null) {
             await backpackSave('auth_token', responseData['key']);
             if (responseData['user'] != null) {
               await storageSave("user", responseData['user']);
-              print("user----------------------");
-              print(responseData);
               await Auth.authenticate(data: responseData['user']);
-              Map user = await Auth.data();
 
-              print(user);
-              await preloadEssentialData();
+              try {
+                // Get FCM token and register device
+                String? fcmToken = await backpackRead('fcm_token');
+                if (fcmToken == null) {
+                  fcmToken = await FirebaseMessaging.instance.getToken();
+                  if (fcmToken != null) {
+                    await backpackSave('fcm_token', fcmToken);
+                  }
+                }
+
+                if (fcmToken != null) {
+                  // Make device registration non-blocking
+                  registerDeviceWithBackend(fcmToken).catchError((e) {
+                    NyLogger.error(
+                        'Device registration error (non-blocking): $e');
+                  });
+                }
+
+                // Make topic subscription non-blocking
+                FirebaseServiceProvider.subscribeToUserTopics().catchError((e) {
+                  NyLogger.error('Topic subscription error (non-blocking): $e');
+                });
+                await CacheInvalidationManager.onUserLogin();
+                // Make data preloading non-blocking
+                preloadEssentialData().catchError((e) {
+                  NyLogger.error('Data preloading error (non-blocking): $e');
+                });
+              } catch (e) {
+                // Log but don't block login flow for notification setup errors
+                NyLogger.error('Non-critical error during login: $e');
+              }
             }
           }
           return responseData;
@@ -116,6 +178,187 @@ class UserApiService extends NyApiService {
           }
           throw Exception("Login failed: ${dioError.message}");
         });
+  }
+
+// Modified Google login function in UserApiService class
+  Future<dynamic> loginWithGoogleFirebase() async {
+    try {
+      // Initialize the GoogleSignIn instance
+      final GoogleSignIn googleSignIn = GoogleSignIn();
+
+      print("i am here");
+      // Trigger the authentication flow
+      final GoogleSignInAccount? googleUser = await googleSignIn.signIn();
+
+      if (googleUser == null) {
+        throw Exception("Google sign-in was canceled");
+      }
+
+      // Obtain the auth details from the request
+      final GoogleSignInAuthentication googleAuth =
+          await googleUser.authentication;
+
+      // Create a new credential
+      final credential = GoogleAuthProvider.credential(
+        accessToken: googleAuth.accessToken,
+        idToken: googleAuth.idToken,
+      );
+
+      // Sign in to Firebase with the Google credential
+      final UserCredential userCredential =
+          await FirebaseAuth.instance.signInWithCredential(credential);
+
+      // Get Firebase ID token
+      String? firebaseToken = await userCredential.user?.getIdToken();
+
+      if (firebaseToken == null) {
+        throw Exception("Failed to obtain Firebase token");
+      }
+
+      // Get FCM token for push notifications
+      String? fcmToken = await backpackRead('fcm_token');
+      if (fcmToken == null) {
+        fcmToken = await FirebaseMessaging.instance.getToken();
+        if (fcmToken != null) {
+          await backpackSave('fcm_token', fcmToken);
+        }
+      }
+
+      // Send the Firebase token to your Django backend
+      return await network(
+          request: (request) => request.post(
+                "/auth/firebase-google/",
+                data: {
+                  "id_token": firebaseToken,
+                  "fcm_token": fcmToken,
+                },
+              ),
+          handleSuccess: (Response response) async {
+            // Store user token and data
+            final responseData = response.data;
+            if (responseData['key'] != null) {
+              await backpackSave('auth_token', responseData['key']);
+              if (responseData['user'] != null) {
+                await storageSave("user", responseData['user']);
+                await Auth.authenticate(data: responseData['user']);
+
+                try {
+                  // Make device registration non-blocking
+                  if (fcmToken != null) {
+                    registerDeviceWithBackend(fcmToken).catchError((e) {
+                      NyLogger.error(
+                          'Device registration error (non-blocking): $e');
+                    });
+                  } else {
+                    // Try one more time to get FCM token
+                    String? newToken =
+                        await FirebaseMessaging.instance.getToken();
+                    if (newToken != null) {
+                      await backpackSave('fcm_token', newToken);
+                      registerDeviceWithBackend(newToken).catchError((e) {
+                        NyLogger.error(
+                            'Device registration error (non-blocking): $e');
+                      });
+                      await CacheInvalidationManager.onUserLogin();
+                      // Make data preloading non-blocking
+                      preloadEssentialData().catchError((e) {
+                        NyLogger.error(
+                            'Data preloading error (non-blocking): $e');
+                      });
+                    }
+                  }
+
+                  // Make topic subscription non-blocking
+                  FirebaseServiceProvider.subscribeToUserTopics()
+                      .catchError((e) {
+                    NyLogger.error(
+                        'Topic subscription error (non-blocking): $e');
+                  });
+
+                  // Make data preloading non-blocking
+                  preloadEssentialData().catchError((e) {
+                    NyLogger.error('Data preloading error (non-blocking): $e');
+                  });
+                } catch (e) {
+                  // Log but don't block login flow for notification setup errors
+                  NyLogger.error('Non-critical error during Google login: $e');
+                }
+              }
+            }
+            return responseData;
+          },
+          handleFailure: (DioException dioError) {
+            // Handle API error response
+            if (dioError.response?.data != null) {
+              final errors = dioError.response!.data;
+              String errorMessage = "Google sign-in failed";
+
+              if (errors.containsKey('error')) {
+                errorMessage = errors['error'];
+              } else if (errors.containsKey('non_field_errors')) {
+                errorMessage = errors['non_field_errors'][0];
+              } else if (errors.containsKey('detail')) {
+                errorMessage = errors['detail'];
+              }
+
+              throw Exception(errorMessage);
+            }
+            throw Exception("Google sign-in failed: ${dioError.message}");
+          });
+    } catch (e) {
+      // Clean up Firebase auth state if there was an error
+      try {
+        await FirebaseAuth.instance.signOut();
+      } catch (_) {}
+
+      // Clean up Google Sign-In state if there was an error
+      try {
+        await _googleSignIn.signOut();
+      } catch (_) {}
+
+      if (e is DioException) {
+        throw Exception("Google sign-in failed: ${e.message}");
+      }
+      throw Exception(e.toString());
+    }
+  }
+
+// Make device registration function more resilient
+  Future<void> registerDeviceWithBackend(String token) async {
+    try {
+      // Get auth token
+      final authToken = await backpackRead('auth_token');
+      if (authToken == null) return;
+
+      // Get unique device ID
+      String deviceId = await _getDeviceId();
+
+      // Make API call to register device
+      await network(
+        request: (request) => request.post(
+          "/devices/",
+          data: {
+            "registration_id": token,
+            "device_id": deviceId,
+            "active": true
+          },
+        ),
+        headers: {
+          "Authorization": "Token $authToken",
+        },
+        handleSuccess: (response) {
+          NyLogger.info(
+              'Device registered successfully for push notifications');
+        },
+        handleFailure: (error) {
+          // Just log the error but don't throw
+          NyLogger.error('Failed to register device: ${error.message}');
+        },
+      );
+    } catch (e) {
+      // Just log the error but don't throw
+      NyLogger.error('Error registering device: $e');
+    }
   }
 
   Future<dynamic> getProfilePicture() async {
@@ -215,67 +458,9 @@ class UserApiService extends NyApiService {
         });
   }
 
-  Future<dynamic> loginWithGoogle() async {
-    try {
-      // Trigger the Google Sign In process
-      final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
+  // Register device for push notifications
 
-      if (googleUser == null) {
-        // User canceled the sign-in process
-        throw Exception("Google sign-in canceled");
-      }
-
-      // Get authentication data from Google
-      final GoogleSignInAuthentication googleAuth =
-          await googleUser.authentication;
-      final String accessToken = googleAuth.accessToken!;
-      final String? idToken = googleAuth.idToken;
-
-      return await network(
-          request: (request) => request.post(
-                "/auth/google/",
-                data: {
-                  "access_token": accessToken,
-                  "id_token": idToken, // Optional according to your API docs
-                },
-              ),
-          handleSuccess: (Response response) async {
-            // Store user token and data
-            final responseData = response.data;
-            if (responseData['key'] != null) {
-              await backpackSave('auth_token', responseData['key']);
-              if (responseData['user'] != null) {
-                await storageSave("user", responseData['user']);
-                await Auth.authenticate(data: responseData['user']);
-                await preloadEssentialData();
-              }
-            }
-            return responseData;
-          },
-          handleFailure: (DioException dioError) {
-            // Extract error message from response
-            if (dioError.response?.data != null) {
-              final errors = dioError.response!.data;
-              String errorMessage = "Google sign-in failed";
-
-              if (errors.containsKey('error')) {
-                errorMessage = errors['error'];
-              } else if (errors.containsKey('non_field_errors')) {
-                errorMessage = errors['non_field_errors'][0];
-              }
-
-              throw Exception(errorMessage);
-            }
-            throw Exception("Google sign-in failed: ${dioError.message}");
-          });
-    } catch (e) {
-      if (e is DioException) {
-        throw Exception("Google sign-in failed: ${e.message}");
-      }
-      throw Exception(e.toString());
-    }
-  }
-
+  /// Log out user
   /// Log out user
   Future<bool> logout() async {
     final authToken = await backpackRead('auth_token');
@@ -283,6 +468,9 @@ class UserApiService extends NyApiService {
     if (authToken == null) {
       return true; // Already logged out
     }
+
+    // Unsubscribe from FCM topics before logging out
+    await FirebaseServiceProvider.unsubscribeFromAllTopics();
 
     return await network(
         request: (request) => request.post("/auth/logout/", data: {}),
@@ -294,17 +482,34 @@ class UserApiService extends NyApiService {
           await backpackDelete('auth_token');
           await storageDelete("user");
           await Auth.logout();
+
+          // Sign out from Google if needed
           if (_googleSignIn.currentUser != null) {
             await _googleSignIn.signOut();
-            await Auth.logout();
           }
 
+          // Sign out from Firebase if needed
+          try {
+            await FirebaseAuth.instance.signOut();
+          } catch (_) {}
+
+          await CacheInvalidationManager.onUserLogout();
           return true;
         },
         handleFailure: (DioException dioError) async {
           // Still clear local data on error
           await backpackDelete('auth_token');
           await storageDelete("user");
+
+          // Also sign out from Google and Firebase on error
+          if (_googleSignIn.currentUser != null) {
+            await _googleSignIn.signOut();
+          }
+
+          try {
+            await FirebaseAuth.instance.signOut();
+          } catch (_) {}
+
           return true;
         });
   }
@@ -326,7 +531,7 @@ class UserApiService extends NyApiService {
         },
         handleSuccess: (Response response) async {
           final userData = response.data;
-          await storageSave("user", jsonEncode(userData));
+          await storageSave("user", userData);
 
           return userData;
         },
@@ -450,7 +655,8 @@ class UserApiService extends NyApiService {
         },
         handleSuccess: (Response response) async {
           final userData = response.data;
-          await storageSave("user", jsonEncode(userData));
+          await CacheInvalidationManager.onProfileUpdate();
+          await storageSave("user", userData);
           return userData;
         },
         handleFailure: (DioError dioError) {
@@ -483,5 +689,25 @@ class UserApiService extends NyApiService {
         handleFailure: (DioError dioError) {
           throw Exception("Failed to delete account: ${dioError.message}");
         });
+  }
+
+  Future<String> _getDeviceId() async {
+    try {
+      DeviceInfoPlugin deviceInfo = DeviceInfoPlugin();
+
+      if (Platform.isAndroid) {
+        AndroidDeviceInfo androidInfo = await deviceInfo.androidInfo;
+        return androidInfo.id; // Use Android device ID
+      } else if (Platform.isIOS) {
+        IosDeviceInfo iosInfo = await deviceInfo.iosInfo;
+        return iosInfo.identifierForVendor ??
+            'unknown_ios_device'; // Use iOS vendor identifier
+      }
+
+      return 'unknown_device_${DateTime.now().millisecondsSinceEpoch}';
+    } catch (e) {
+      NyLogger.error('Error getting device ID: $e');
+      return 'error_device_${DateTime.now().millisecondsSinceEpoch}';
+    }
   }
 }

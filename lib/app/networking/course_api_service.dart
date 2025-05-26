@@ -1,7 +1,9 @@
 import 'dart:convert';
-
 import 'package:flutter/material.dart';
+import 'package:flutter_app/app/networking/cache_invalidation_manager.dart';
 import '../../utils/system_util.dart';
+import '../models/course.dart';
+import '../models/enrollment.dart';
 import '/config/decoders.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 
@@ -12,28 +14,24 @@ class CourseApiService extends NyApiService {
   @override
   String get baseUrl => getEnv('API_BASE_URL') + "/api";
 
-  /// Get featured courses
-  /// Get featured courses
+  // Cache duration constants
+  static const Duration CACHE_FEATURED_COURSES = Duration(hours: 12);
+  static const Duration CACHE_TOP_COURSES = Duration(hours: 12);
+  static const Duration CACHE_ALL_COURSES = Duration(hours: 6);
+  static const Duration CACHE_COURSE_DETAILS = Duration(hours: 6);
+  static const Duration CACHE_COURSE_CURRICULUM = Duration(hours: 4);
+  static const Duration CACHE_COURSE_OBJECTIVES = Duration(hours: 12);
+  static const Duration CACHE_COURSE_REQUIREMENTS = Duration(hours: 12);
+  static const Duration CACHE_ENROLLED_COURSES = Duration(hours: 1);
+  static const Duration CACHE_WISHLIST = Duration(hours: 1);
+  static const Duration NETWORK_TIMEOUT = Duration(seconds: 30);
+
+  /// Get featured courses with caching
   Future<List<dynamic>> getFeaturedCourses({bool refresh = false}) async {
-    // Check cache first if not forcing refresh
-    if (!refresh) {
-      final cached = await storageRead('featured_courses');
-      if (cached != null) {
-        // Ensure cached data is a List
-        if (cached is List) {
-          return cached;
-        } else if (cached is String) {
-          try {
-            final parsedData = jsonDecode(cached);
-            if (parsedData is List) {
-              return parsedData;
-            }
-          } catch (e) {
-            NyLogger.error('Error parsing cached featured courses data: $e');
-          }
-        }
-        // If we reach here, cached data is invalid, so fetch fresh data
-      }
+    const cacheKey = 'featured_courses';
+
+    if (refresh) {
+      await cache().clear(cacheKey);
     }
 
     final headers = await getAuthHeaders();
@@ -41,63 +39,10 @@ class CourseApiService extends NyApiService {
     return await network(
         request: (request) => request.get("/courses/featured/"),
         headers: headers,
-        handleSuccess: (Response response) async {
-          final responseData = response.data;
-
-          // Handle different types of response data
-          List<dynamic> coursesData = [];
-
-          if (responseData is List) {
-            coursesData = responseData;
-          } else if (responseData is Map) {
-            // Check if the map contains a list of courses
-            if (responseData.containsKey('data') &&
-                responseData['data'] is List) {
-              coursesData = responseData['data'];
-            } else if (responseData.containsKey('courses') &&
-                responseData['courses'] is List) {
-              coursesData = responseData['courses'];
-            } else {
-              // Log what we received for debugging
-              NyLogger.debug('Featured courses API response: $responseData');
-              // Convert to a list if possible
-              coursesData = [responseData];
-            }
-          } else {
-            NyLogger.error(
-                'Featured courses API returned unexpected type: ${responseData.runtimeType}');
-
-            // Try to handle primitive types
-            if (responseData is int ||
-                responseData is double ||
-                responseData is bool) {
-              coursesData = [
-                {"value": responseData}
-              ];
-            } else if (responseData is String) {
-              try {
-                final parsed = jsonDecode(responseData);
-                if (parsed is List) {
-                  coursesData = parsed;
-                } else {
-                  coursesData = [parsed];
-                }
-              } catch (e) {
-                coursesData = [
-                  {"text": responseData}
-                ];
-              }
-            } else {
-              // Fallback to empty list
-              coursesData = [];
-            }
-          }
-
-          // Cache the processed data
-          await storageSave('featured_courses', coursesData);
-
-          // Return the list
-          return coursesData;
+        cacheKey: cacheKey,
+        cacheDuration: CACHE_FEATURED_COURSES,
+        handleSuccess: (Response response) {
+          return _parseCoursesResponse(response.data, 'featured courses');
         },
         handleFailure: (DioException dioError) {
           throw Exception(
@@ -105,47 +50,42 @@ class CourseApiService extends NyApiService {
         });
   }
 
-  /// Get top courses
+  /// Get top courses with caching
   Future<List<dynamic>> getTopCourses({bool refresh = false}) async {
-    // Check cache first if not forcing refresh
-    if (!refresh) {
-      final cached = await storageRead('top_courses');
-      if (cached != null) {
-        return cached;
-      }
+    const cacheKey = 'top_courses';
+
+    if (refresh) {
+      await cache().clear(cacheKey);
     }
 
     return await network(
         request: (request) => request.get("/courses/top/"),
-        handleSuccess: (Response response) async {
-          // Cache the data
-          await storageSave('top_courses', response.data);
-
-          // Return the data
-          return response.data;
+        cacheKey: cacheKey,
+        cacheDuration: CACHE_TOP_COURSES,
+        handleSuccess: (Response response) {
+          return _parseCoursesResponse(response.data, 'top courses');
         },
         handleFailure: (DioException dioError) {
           throw Exception("Failed to fetch top courses: ${dioError.message}");
         });
   }
 
-  /// Get all courses with optional filters
+  /// Get all courses with intelligent caching based on filters
   Future<List<dynamic>> getAllCourses({
     int? categoryId,
     String? search,
     String? location,
     bool refresh = false,
   }) async {
-    // Create a unique cache key based on filters
-    final cacheKey =
-        'courses_${categoryId ?? ''}_${search ?? ''}_${location ?? ''}';
+    // Create unique cache key based on filters
+    final cacheKey = _createCacheKey('courses', {
+      if (categoryId != null) 'category': categoryId,
+      if (search != null && search.isNotEmpty) 'search': search,
+      if (location != null && location.isNotEmpty) 'location': location,
+    });
 
-    // Check cache first if not forcing refresh
-    if (!refresh) {
-      final cached = await storageRead(cacheKey);
-      if (cached != null) {
-        return cached;
-      }
+    if (refresh) {
+      await cache().clear(cacheKey);
     }
 
     // Build query parameters
@@ -156,44 +96,33 @@ class CourseApiService extends NyApiService {
       queryParams['location'] = location;
 
     return await network(
-        request: (request) => request.get(
-              "/courses/",
-              queryParameters: queryParams,
-            ),
-        handleSuccess: (Response response) async {
-          // Cache the data
-          await storageSave(cacheKey, response.data);
-
-          // Return the data
-          return response.data;
+        request: (request) =>
+            request.get("/courses/", queryParameters: queryParams),
+        cacheKey: cacheKey,
+        cacheDuration: CACHE_ALL_COURSES,
+        handleSuccess: (Response response) {
+          return _parseCoursesResponse(response.data, 'courses');
         },
         handleFailure: (DioException dioError) {
           throw Exception("Failed to fetch courses: ${dioError.message}");
         });
   }
 
-  /// Get courses by category
+  /// Get courses by category with caching
   Future<List<dynamic>> getCoursesByCategory(int categoryId,
       {bool refresh = false}) async {
-    // Create a cache key
     final cacheKey = 'courses_category_$categoryId';
 
-    // Check cache first if not forcing refresh
-    if (!refresh) {
-      final cached = await storageRead(cacheKey);
-      if (cached != null) {
-        return cached;
-      }
+    if (refresh) {
+      await cache().clear(cacheKey);
     }
 
     return await network(
         request: (request) => request.get("/courses/category/$categoryId/"),
-        handleSuccess: (Response response) async {
-          // Cache the data
-          await storageSave(cacheKey, response.data);
-
-          // Return the data
-          return response.data;
+        cacheKey: cacheKey,
+        cacheDuration: CACHE_ALL_COURSES,
+        handleSuccess: (Response response) {
+          return _parseCoursesResponse(response.data, 'category courses');
         },
         handleFailure: (DioException dioError) {
           throw Exception(
@@ -201,79 +130,270 @@ class CourseApiService extends NyApiService {
         });
   }
 
-  /// Get course details
+  /// Get course details with caching
   Future<dynamic> getCourseDetails(int courseId, {bool refresh = false}) async {
-    // Create a cache key
     final cacheKey = 'course_details_$courseId';
 
-    // Check cache first if not forcing refresh
-    if (!refresh) {
-      final cached = await storageRead(cacheKey);
-      if (cached != null) {
-        return cached;
-      }
+    if (refresh) {
+      await cache().clear(cacheKey);
     }
 
     return await network(
         request: (request) => request.get("/courses/$courseId/"),
-        handleSuccess: (Response response) async {
-          // Cache the data
-          await storageSave(cacheKey, response.data);
-
-          // Return the data
-          return response.data;
-        },
+        cacheKey: cacheKey,
+        cacheDuration: CACHE_COURSE_DETAILS,
+        handleSuccess: (Response response) => response.data,
         handleFailure: (DioException dioError) {
           throw Exception(
               "Failed to fetch course details: ${dioError.message}");
         });
   }
 
-  Future<dynamic> purchaseCourse({
-    required int courseId,
-    required int planId,
-    required String razorpayPaymentId,
-    required String razorpayOrderId,
-    required String razorpaySignature,
-    int? paymentCardId,
+  /// Get complete course details (including enrollment info) with caching
+  Future<dynamic> getCompleteDetails(int courseId,
+      {bool refresh = false}) async {
+    final authToken = await backpackRead('auth_token');
+
+    if (authToken == null) {
+      // Fallback to regular course details if not authenticated
+      return getCourseDetails(courseId, refresh: refresh);
+    }
+
+    final cacheKey = 'course_complete_details_$courseId';
+
+    if (refresh) {
+      await cache().clear(cacheKey);
+    }
+
+    return await network(
+        request: (request) =>
+            request.get("/courses/$courseId/complete_details/"),
+        headers: {"Authorization": "Token $authToken"},
+        cacheKey: cacheKey,
+        cacheDuration: CACHE_COURSE_DETAILS,
+        handleSuccess: (Response response) => response.data,
+        handleFailure: (DioException dioError) {
+          // Fallback to regular course details if API call fails
+          return getCourseDetails(courseId, refresh: refresh);
+        });
+  }
+
+  Future<Course> getCourseWithEnrollmentDetails(int courseId,
+      {bool refresh = false}) async {
+    try {
+      //  Use your existing getCourseDetails method - it already includes enrollment status when authenticated
+      final courseData = await getCourseDetails(courseId, refresh: refresh);
+      return Course.fromJson(courseData);
+    } catch (e) {
+      NyLogger.error('Error getting course with enrollment details: $e');
+      rethrow;
+    }
+  }
+
+  Future<List<Course>> getEnrolledCoursesAsObjects(
+      {bool refresh = false}) async {
+    try {
+      //  Use your existing getEnrolledCourses method
+      final coursesData = await getEnrolledCourses(refresh: refresh);
+      return coursesData
+          .map((courseData) => Course.fromJson(courseData))
+          .toList();
+    } catch (e) {
+      NyLogger.error('Error getting enrolled courses as objects: $e');
+      rethrow;
+    }
+  }
+
+  Future<List<Course>> getAllCoursesAsObjects({
+    int? categoryId,
+    String? search,
+    String? location,
+    bool refresh = false,
   }) async {
-    // Get auth token
+    try {
+      // Use your existing getAllCourses method - it already includes enrollment status when authenticated
+      final coursesData = await getAllCourses(
+        categoryId: categoryId,
+        search: search,
+        location: location,
+        refresh: refresh,
+      );
+      return coursesData
+          .map((courseData) => Course.fromJson(courseData))
+          .toList();
+    } catch (e) {
+      NyLogger.error('Error getting courses as objects: $e');
+      rethrow;
+    }
+  }
+
+  /// Get user's enrolled courses with short caching
+  Future<List<dynamic>> getEnrolledCourses({bool refresh = false}) async {
     final authToken = await backpackRead('auth_token');
     if (authToken == null) {
       throw Exception("Not logged in");
     }
 
+    const cacheKey = 'enrolled_courses';
+
+    if (refresh) {
+      await cache().clear(cacheKey);
+    }
+
     return await network(
-        request: (request) => request.post(
-              "/payments/purchase-course/",
-              data: {
-                "course_id": courseId,
-                "plan_id": planId,
-                "razorpay_payment_id": razorpayPaymentId,
-                "razorpay_order_id": DateTime.now().microsecondsSinceEpoch,
-                "razorpay_signature": 'auto_verify',
-                // if (paymentCardId != null) "payment_card_id": paymentCardId,
-              },
-            ),
+        request: (request) => request.get("/enrollments/"),
+        headers: {"Authorization": "Token $authToken"},
+        cacheKey: cacheKey,
+        cacheDuration: CACHE_ENROLLED_COURSES,
+        handleSuccess: (Response response) {
+          return _parseCoursesResponse(response.data, 'enrolled courses');
+        },
+        handleFailure: (DioException dioError) {
+          throw Exception(
+              "Failed to fetch enrolled courses: ${dioError.message}");
+        });
+  }
+
+  /// Get user's wishlist with short caching
+  Future<List<dynamic>> getWishlist({bool refresh = false}) async {
+    final authToken = await backpackRead('auth_token');
+    if (authToken == null) {
+      throw Exception("Not logged in");
+    }
+
+    const cacheKey = 'wishlist';
+
+    if (refresh) {
+      await cache().clear(cacheKey);
+    }
+
+    return await network(
+        request: (request) => request.get("/wishlist/"),
+        headers: {"Authorization": "Token $authToken"},
+        cacheKey: cacheKey,
+        cacheDuration: CACHE_WISHLIST,
+        handleSuccess: (Response response) {
+          return _parseCoursesResponse(response.data, 'wishlist');
+        },
+        handleFailure: (DioException dioError) {
+          throw Exception("Failed to fetch wishlist: ${dioError.message}");
+        });
+  }
+
+  /// Get course curriculum with caching
+  Future<List<dynamic>> getCourseCurriculum(int courseId,
+      {bool refresh = false}) async {
+    final cacheKey = 'course_curriculum_$courseId';
+
+    if (refresh) {
+      await cache().clear(cacheKey);
+    }
+
+    final authToken = await backpackRead('auth_token');
+    Map<String, String> headers = {};
+    if (authToken != null) {
+      headers["Authorization"] = "Token $authToken";
+    }
+
+    return await network(
+        request: (request) => request.get("/courses/$courseId/curriculum/"),
+        headers: headers,
+        cacheKey: cacheKey,
+        cacheDuration: CACHE_COURSE_CURRICULUM,
+        handleSuccess: (Response response) {
+          return _parseCoursesResponse(response.data, 'curriculum');
+        },
+        handleFailure: (DioException dioError) {
+          throw Exception(
+              "Failed to fetch course curriculum: ${dioError.message}");
+        });
+  }
+
+  /// Get course objectives with caching
+  Future<List<dynamic>> getCourseObjectives(int courseId,
+      {bool refresh = false}) async {
+    final cacheKey = 'course_objectives_$courseId';
+
+    if (refresh) {
+      await cache().clear(cacheKey);
+    }
+
+    return await network(
+        request: (request) => request.get("/courses/$courseId/objectives/"),
+        cacheKey: cacheKey,
+        cacheDuration: CACHE_COURSE_OBJECTIVES,
+        handleSuccess: (Response response) {
+          return _parseCoursesResponse(response.data, 'objectives');
+        },
+        handleFailure: (DioException dioError) {
+          throw Exception(
+              "Failed to fetch course objectives: ${dioError.message}");
+        });
+  }
+
+  /// Get course requirements with caching
+  Future<List<dynamic>> getCourseRequirements(int courseId,
+      {bool refresh = false}) async {
+    final cacheKey = 'course_requirements_$courseId';
+
+    if (refresh) {
+      await cache().clear(cacheKey);
+    }
+
+    return await network(
+        request: (request) => request.get("/courses/$courseId/requirements/"),
+        cacheKey: cacheKey,
+        cacheDuration: CACHE_COURSE_REQUIREMENTS,
+        handleSuccess: (Response response) {
+          return _parseCoursesResponse(response.data, 'requirements');
+        },
+        handleFailure: (DioException dioError) {
+          throw Exception(
+              "Failed to fetch course requirements: ${dioError.message}");
+        });
+  }
+
+  /// Purchase course (invalidates relevant caches)
+  Future<dynamic> purchaseCourse({
+    required int courseId,
+    required String planType,
+    required String razorpayPaymentId,
+    required String razorpayOrderId,
+    required String razorpaySignature,
+    int? paymentCardId,
+  }) async {
+    final authToken = await backpackRead('auth_token');
+    if (authToken == null) {
+      throw Exception("Not logged in");
+    }
+
+    Map<String, dynamic> data = {
+      "course_id": courseId,
+      "plan_type": planType,
+      "razorpay_payment_id": razorpayPaymentId,
+      "razorpay_order_id": razorpayOrderId,
+      "razorpay_signature": razorpaySignature,
+    };
+
+    if (paymentCardId != null) {
+      data["payment_card_id"] = paymentCardId;
+    }
+
+    return await network(
+        request: (request) =>
+            request.post("/payments/purchase-course/", data: data),
         headers: {
-          "Authorization": "Token ${authToken}",
+          "Authorization": "Token $authToken",
           "Content-Type": "application/json",
         },
         handleSuccess: (Response response) async {
           // Invalidate relevant caches after successful purchase
-          await Future.wait([
-            storageDelete('enrolled_courses'),
-            storageDelete('course_details_$courseId'),
-            storageDelete('course_complete_details_$courseId'),
-            storageDelete(
-                'wishlist'), // User might have had this course in wishlist
-          ]);
-
+          await _invalidatePostPurchaseCaches(courseId);
+          await CacheInvalidationManager.onCoursePurchase(courseId);
           NyLogger.info('Course purchased successfully: $courseId');
           return response.data;
         },
         handleFailure: (DioException dioError) {
-          // Parse error response for better error handling
           String errorMessage = "Failed to purchase course";
 
           if (dioError.response?.data != null) {
@@ -297,188 +417,21 @@ class CourseApiService extends NyApiService {
         });
   }
 
-  /// Get complete course details (including enrollment info)
-  Future<dynamic> getCompleteDetails(int courseId,
-      {bool refresh = false}) async {
-    // Get auth token
+  /// Add course to wishlist (invalidates wishlist cache)
+  Future<dynamic> addToWishlist(int courseId) async {
     final authToken = await backpackRead('auth_token');
-
     if (authToken == null) {
-      // Fallback to regular course details if not authenticated
-      return getCourseDetails(courseId, refresh: refresh);
-    }
-
-    // Create a cache key
-    final cacheKey = 'course_complete_details_$courseId';
-
-    // Check cache first if not forcing refresh
-    if (!refresh) {
-      final cached = await storageRead(cacheKey);
-      if (cached != null) {
-        return cached;
-      }
+      throw Exception("Not logged in");
     }
 
     return await network(
         request: (request) =>
-            request.get("/courses/$courseId/complete_details/"),
-        headers: {
-          "Authorization": "Token ${authToken}",
-        },
+            request.post("/wishlist/", data: {"course": courseId}),
+        headers: {"Authorization": "Token $authToken"},
         handleSuccess: (Response response) async {
-          // Cache the data
-          await storageSave(cacheKey, response.data);
-
-          // Return the data
-          return response.data;
-        },
-        handleFailure: (DioException dioError) {
-          // Fallback to regular course details if API call fails
-          return getCourseDetails(courseId, refresh: refresh);
-        });
-  }
-
-  /// Get user's enrolled courses
-  Future<List<dynamic>> getEnrolledCourses({bool refresh = false}) async {
-    // Get auth token
-    final authToken = await backpackRead('auth_token');
-    if (authToken == null) {
-      throw Exception("Not logged in");
-    }
-
-    // Create a cache key
-    final cacheKey = 'enrolled_courses';
-
-    // // Check cache first if not forcing refresh
-    // if (!refresh) {
-    //   final cached = await storageRead(cacheKey);
-    //   if (cached != null) {
-    //     return cached;
-    //   }
-    // }
-
-    return await network(
-        request: (request) => request.get("/enrollments/"),
-        headers: {
-          "Authorization": "Token ${authToken}",
-        },
-        handleSuccess: (Response response) async {
-          // Cache the data
-          await storageSave(cacheKey, response.data);
-
-          // Return the data
-          return response.data;
-        },
-        handleFailure: (DioException dioError) {
-          throw Exception(
-              "Failed to fetch enrolled courses: ${dioError.message}");
-        });
-  }
-
-  /// Get user's wishlist
-  Future<List<dynamic>> getWishlist({bool refresh = false}) async {
-    // Get auth token
-    final authToken = await backpackRead('auth_token');
-    if (authToken == null) {
-      throw Exception("Not logged in");
-    }
-
-    // Create a cache key
-    final cacheKey = 'wishlist';
-
-    // Check cache first if not forcing refresh
-    if (!refresh) {
-      final cached = await storageRead(cacheKey);
-      if (cached != null) {
-        // Ensure we're returning a List<dynamic>
-        if (cached is List) {
-          return cached;
-        } else if (cached is String) {
-          // Try to parse the string as JSON
-          try {
-            final parsedData = jsonDecode(cached);
-            if (parsedData is List) {
-              return parsedData;
-            }
-          } catch (e) {
-            // If parsing fails, continue to fetch from network
-            NyLogger.error('Error parsing cached wishlist data: $e');
-          }
-        }
-        // If we get here, the cached data is invalid, so we'll fetch fresh data
-      }
-    }
-
-    return await network(
-        request: (request) => request.get("/wishlist/"),
-        headers: {
-          "Authorization": "Token $authToken",
-        },
-        handleSuccess: (Response response) async {
-          // Cache the data
-          // Make sure we're storing the correct data type
-          final responseData = response.data;
-          print(responseData);
-          if (responseData is List) {
-            await storageSave(cacheKey, responseData);
-          } else {
-            NyLogger.error(
-                'Wishlist API returned non-list data: $responseData');
-          }
-
-          // Return the data as a List
-          if (responseData is List) {
-            return responseData;
-          } else if (responseData is Map) {
-            // Some APIs return objects like {"data": []} instead of direct lists
-            if (responseData.containsKey('data') &&
-                responseData['data'] is List) {
-              return responseData['data'];
-            }
-            // If there's no standard structure, return as a single-item list
-            return [responseData];
-          } else if (responseData is String) {
-            try {
-              final parsedData = jsonDecode(responseData);
-              if (parsedData is List) {
-                return parsedData;
-              }
-              return [parsedData];
-            } catch (e) {
-              // If parsing fails, return as a single-item list
-              return [responseData];
-            }
-          }
-
-          // Fallback to empty list
-          return [];
-        },
-        handleFailure: (DioException dioError) {
-          throw Exception("Failed to fetch wishlist: ${dioError.message}");
-        });
-  }
-
-  /// Add course to wishlist
-  Future<dynamic> addToWishlist(int courseId) async {
-    // Get auth token
-    final authToken = await backpackRead('auth_token');
-    if (authToken == null) {
-      throw Exception("Not logged in");
-    }
-
-    return await network(
-        request: (request) => request.post(
-              "/wishlist/",
-              data: {
-                "course": courseId,
-              },
-            ),
-        headers: {
-          "Authorization": "Token ${authToken}",
-        },
-        handleSuccess: (Response response) async {
-          // Invalidate wishlist cache to force refresh
-          await storageDelete('wishlist');
+          // Invalidate wishlist cache
+          await cache().clear('wishlist');
+          await CacheInvalidationManager.onWishlistChange();
 
           return response.data;
         },
@@ -488,9 +441,8 @@ class CourseApiService extends NyApiService {
         });
   }
 
-  /// Remove course from wishlist
+  /// Remove course from wishlist (invalidates wishlist cache)
   Future<bool> removeFromWishlist(int wishlistItemId) async {
-    // Get auth token
     final authToken = await backpackRead('auth_token');
     if (authToken == null) {
       throw Exception("Not logged in");
@@ -498,13 +450,10 @@ class CourseApiService extends NyApiService {
 
     return await network(
         request: (request) => request.delete("/wishlist/$wishlistItemId/"),
-        headers: {
-          "Authorization": "Token ${authToken}",
-        },
+        headers: {"Authorization": "Token $authToken"},
         handleSuccess: (Response response) async {
-          // Invalidate wishlist cache to force refresh
-          await storageDelete('wishlist');
-
+          // Invalidate wishlist cache
+          await cache().clear('wishlist');
           return true;
         },
         handleFailure: (DioException dioError) {
@@ -513,32 +462,20 @@ class CourseApiService extends NyApiService {
         });
   }
 
-  /// Enroll in a course
+  /// Enroll in course (invalidates relevant caches)
   Future<dynamic> enrollInCourse(int courseId) async {
-    // Get auth token
     final authToken = await backpackRead('auth_token');
     if (authToken == null) {
       throw Exception("Not logged in");
     }
 
     return await network(
-        request: (request) => request.post(
-              "/enrollments/",
-              data: {
-                "course": courseId,
-              },
-            ),
-        headers: {
-          "Authorization": "Token ${authToken}",
-        },
+        request: (request) =>
+            request.post("/enrollments/", data: {"course": courseId}),
+        headers: {"Authorization": "Token $authToken"},
         handleSuccess: (Response response) async {
-          // Invalidate enrolled courses cache to force refresh
-          await storageDelete('enrolled_courses');
-
-          // Also invalidate course detail caches for this course
-          await storageDelete('course_details_$courseId');
-          await storageDelete('course_complete_details_$courseId');
-
+          // Invalidate relevant caches after enrollment
+          await _invalidatePostEnrollmentCaches(courseId);
           return response.data;
         },
         handleFailure: (DioException dioError) {
@@ -546,124 +483,256 @@ class CourseApiService extends NyApiService {
         });
   }
 
-  /// Get course curriculum
-  Future<List<dynamic>> getCourseCurriculum(int courseId,
-      {bool refresh = false}) async {
-    // Create a cache key
-    final cacheKey = 'course_curriculum_$courseId';
-
-    // Check cache first if not forcing refresh
-    // if (!refresh) {
-    //   final cached = await storageRead(cacheKey);
-    //   if (cached != null) {
-    //     return cached;
-    //   }
-    // }
-
-    // Get auth token - curriculum might be protected
-    final authToken = await backpackRead('auth_token');
-    Map<String, String> headers = {};
-    if (authToken != null) {
-      headers["Authorization"] = "Token ${authToken}";
-    }
-
-    return await network(
-        request: (request) => request.get("/courses/$courseId/curriculum/"),
-        headers: headers,
-        handleSuccess: (Response response) async {
-          // Cache the data
-          await storageSave(cacheKey, response.data);
-
-          // Return the data
-          return response.data;
-        },
-        handleFailure: (DioException dioError) {
-          throw Exception(
-              "Failed to fetch course curriculum: ${dioError.message}");
-        });
-  }
-
-  /// Get course objectives
-  Future<List<dynamic>> getCourseObjectives(int courseId,
-      {bool refresh = false}) async {
-    // Create a cache key
-    final cacheKey = 'course_objectives_$courseId';
-
-    // Check cache first if not forcing refresh
-    if (!refresh) {
-      final cached = await storageRead(cacheKey);
-      if (cached != null) {
-        return cached;
-      }
-    }
-
-    return await network(
-        request: (request) => request.get("/courses/$courseId/objectives/"),
-        handleSuccess: (Response response) async {
-          // Cache the data
-          await storageSave(cacheKey, response.data);
-
-          // Return the data
-          return response.data;
-        },
-        handleFailure: (DioException dioError) {
-          throw Exception(
-              "Failed to fetch course objectives: ${dioError.message}");
-        });
-  }
-
-  /// Get course requirements
-  Future<List<dynamic>> getCourseRequirements(int courseId,
-      {bool refresh = false}) async {
-    // Create a cache key
-    final cacheKey = 'course_requirements_$courseId';
-
-    // Check cache first if not forcing refresh
-    if (!refresh) {
-      final cached = await storageRead(cacheKey);
-      if (cached != null) {
-        return cached;
-      }
-    }
-
-    return await network(
-        request: (request) => request.get("/courses/$courseId/requirements/"),
-        handleSuccess: (Response response) async {
-          // Cache the data
-          await storageSave(cacheKey, response.data);
-
-          // Return the data
-          return response.data;
-        },
-        handleFailure: (DioException dioError) {
-          throw Exception(
-              "Failed to fetch course requirements: ${dioError.message}");
-        });
-  }
-
-  /// Preload essential data for faster app startup
-  Future<void> preloadEssentialData() async {
+  /// Get enrollment for specific course (with caching)
+  Future<Map<String, dynamic>?> getEnrollmentForCourse(int courseId) async {
     try {
-      // Get categories, featured courses in parallel
-      await Future.wait([
-        getFeaturedCourses(),
-        getTopCourses(),
-        getAllCourses(),
-      ]);
+      final authToken = await backpackRead('auth_token');
+      if (authToken == null) {
+        return null;
+      }
 
-      // Check if user is authenticated
+      List<dynamic> enrollments = await getEnrolledCourses();
+
+      for (var enrollment in enrollments) {
+        if (enrollment['course'] != null &&
+            enrollment['course']['id'].toString() == courseId.toString()) {
+          return enrollment;
+        }
+      }
+
+      return null;
+    } catch (e) {
+      NyLogger.error('Error getting enrollment for course $courseId: $e');
+      return null;
+    }
+  }
+
+  Future<void> preloadEssentialDataWithEnrollmentStatus() async {
+    try {
       final isAuthenticated = await backpackRead('auth_token') != null;
 
-      // If authenticated, preload user-specific data
+      // ✅ Use existing methods - they already include enrollment status when authenticated
+      await Future.wait([
+        getFeaturedCourses().catchError((e) {
+          NyLogger.error('Failed to preload featured courses: $e');
+          return <dynamic>[];
+        }),
+        getTopCourses().catchError((e) {
+          NyLogger.error('Failed to preload top courses: $e');
+          return <dynamic>[];
+        }),
+        getAllCourses().catchError((e) {
+          NyLogger.error('Failed to preload all courses: $e');
+          return <dynamic>[];
+        }),
+      ]);
+
       if (isAuthenticated) {
         await Future.wait([
-          getEnrolledCourses(),
-          getWishlist(),
+          getEnrolledCourses().catchError((e) {
+            NyLogger.error('Failed to preload enrolled courses: $e');
+            return <dynamic>[];
+          }),
+          getWishlist().catchError((e) {
+            NyLogger.error('Failed to preload wishlist: $e');
+            return <dynamic>[];
+          }),
         ]);
       }
+
+      NyLogger.info('Course data preloading completed with enrollment status');
     } catch (e) {
-      // Silently handle errors - this is just preloading
-      NyLogger.error('Failed to preload some data: ${e.toString()}');
+      NyLogger.error('Failed to preload course data: ${e.toString()}');
     }
+  }
+
+  /// Invalidate enrollment-specific caches
+  Future<void> invalidateEnrollmentCaches() async {
+    final cacheKeysToInvalidate = [
+      'enrolled_courses',
+      'enrolled_courses_with_status',
+    ];
+
+    await Future.wait(cacheKeysToInvalidate.map((key) => cache().clear(key)));
+
+    // Also invalidate any course complete details caches
+    // Note: You might want to track specific course IDs and clear their complete details
+  }
+
+  /// Check enrollment validity
+  @Deprecated('Use Course.hasValidSubscription property instead')
+  Future<bool> checkEnrollmentValidity(int courseId) async {
+    try {
+      // Try to get course with enrollment details first
+      final course = await getCourseWithEnrollmentDetails(courseId);
+      return course.hasValidSubscription;
+    } catch (e) {
+      NyLogger.error('Error checking enrollment validity: $e');
+
+      // Fallback to original method
+      try {
+        dynamic enrollmentData = await getEnrollmentForCourse(courseId);
+
+        if (enrollmentData == null) {
+          return false;
+        }
+
+        Enrollment enrollment = Enrollment.fromJson(enrollmentData);
+
+        if (!enrollment.isActive) {
+          return false;
+        }
+
+        if (enrollment.planType == Enrollment.PLAN_TYPE_LIFETIME) {
+          return true;
+        }
+
+        if (enrollment.expiryDate == null) {
+          return false;
+        }
+
+        DateTime expiryDate = DateTime.parse(enrollment.expiryDate!);
+        return expiryDate.isAfter(DateTime.now());
+      } catch (e) {
+        NyLogger.error('Error in fallback enrollment check: $e');
+        return false;
+      }
+    }
+  }
+
+  /// Preload essential data with optimized parallel loading
+  Future<void> preloadEssentialData() async {
+    try {
+      // Load courses data in parallel
+      await Future.wait([
+        getFeaturedCourses().catchError((e) {
+          NyLogger.error('Failed to preload featured courses: $e');
+          return <dynamic>[];
+        }),
+        getTopCourses().catchError((e) {
+          NyLogger.error('Failed to preload top courses: $e');
+          return <dynamic>[];
+        }),
+        getAllCourses().catchError((e) {
+          NyLogger.error('Failed to preload all courses: $e');
+          return <dynamic>[];
+        }),
+      ]);
+
+      // Check if user is authenticated for user-specific data
+      final isAuthenticated = await backpackRead('auth_token') != null;
+
+      if (isAuthenticated) {
+        await Future.wait([
+          getEnrolledCourses().catchError((e) {
+            NyLogger.error('Failed to preload enrolled courses: $e');
+            return <dynamic>[];
+          }),
+          getWishlist().catchError((e) {
+            NyLogger.error('Failed to preload wishlist: $e');
+            return <dynamic>[];
+          }),
+        ]);
+      }
+
+      NyLogger.info('Course data preloading completed');
+    } catch (e) {
+      NyLogger.error('Failed to preload course data: ${e.toString()}');
+    }
+  }
+
+  /// Invalidate all course-related caches (call after major updates)
+  Future<void> invalidateAllCaches() async {
+    final cacheKeysToInvalidate = [
+      'featured_courses',
+      'top_courses',
+      'enrolled_courses',
+      'wishlist',
+    ];
+
+    await Future.wait(cacheKeysToInvalidate.map((key) => cache().clear(key)));
+
+    // Also clear any course-specific caches
+    // Note: In a real implementation, you might want to track which specific course caches exist
+  }
+
+  // Helper methods
+
+  /// Parse different response structures into consistent List format
+  List<dynamic> _parseCoursesResponse(dynamic responseData, String context) {
+    try {
+      if (responseData is List) {
+        return responseData;
+      } else if (responseData is Map) {
+        // Check common keys for list data
+        final possibleKeys = [
+          'data',
+          'results',
+          'items',
+          context.toLowerCase()
+        ];
+
+        for (final key in possibleKeys) {
+          if (responseData.containsKey(key) && responseData[key] is List) {
+            return responseData[key];
+          }
+        }
+
+        return [responseData];
+      } else if (responseData is String) {
+        try {
+          final parsed = jsonDecode(responseData);
+          if (parsed is List) {
+            return parsed;
+          }
+          return [parsed];
+        } catch (e) {
+          return [
+            {"text": responseData}
+          ];
+        }
+      } else if (responseData != null) {
+        return [
+          {"value": responseData}
+        ];
+      }
+
+      return [];
+    } catch (e) {
+      NyLogger.error('Error parsing $context response: $e');
+      return [];
+    }
+  }
+
+  /// Create cache key with parameters
+  String _createCacheKey(String base, Map<String, dynamic>? params) {
+    if (params == null || params.isEmpty) {
+      return base;
+    }
+
+    final sortedKeys = params.keys.toList()..sort();
+    final paramString =
+        sortedKeys.map((key) => '${key}_${params[key]}').join('_');
+
+    return '${base}_$paramString';
+  }
+
+  /// Invalidate caches after purchase
+  Future<void> _invalidatePostPurchaseCaches(int courseId) async {
+    await Future.wait([
+      cache().clear('enrolled_courses'),
+      cache().clear('course_details_$courseId'),
+      cache().clear('course_complete_details_$courseId'),
+      cache().clear('wishlist'),
+    ]);
+  }
+
+  /// Invalidate caches after enrollment
+  Future<void> _invalidatePostEnrollmentCaches(int courseId) async {
+    await Future.wait([
+      cache().clear('enrolled_courses'),
+      cache().clear('course_details_$courseId'),
+      cache().clear('course_complete_details_$courseId'),
+    ]);
   }
 }

@@ -4,7 +4,7 @@ import 'package:flutter_app/resources/widgets/logo_widget.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 import 'package:flutter/gestures.dart';
 import '../../app/networking/user_api_service.dart';
-import '../../utils/system_util.dart';
+import 'package:country_picker/country_picker.dart'; // Add this package
 
 class SignUpPage extends NyStatefulWidget {
   static RouteView path = ("/sign-up", (_) => SignUpPage());
@@ -25,6 +25,10 @@ class _SignUpPageState extends NyPage<SignUpPage> {
   bool _agreeToTerms = false;
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
+
+  // Country selection
+  String _countryCode = '+91'; // Default to US (+1)
+  String _countryFlag = '🇮🇳'; // Default US flag emoji
 
   // Add UserApiService
   UserApiService _userApiService = UserApiService();
@@ -113,10 +117,10 @@ class _SignUpPageState extends NyPage<SignUpPage> {
                 ),
 
                 const SizedBox(height: 16),
-                // Phone
+                // Phone with country selection
                 _buildFieldLabel('Phone Number'.tr()),
                 const SizedBox(height: 8),
-                _buildPhoneField(),
+                _buildInternationalPhoneField(),
 
                 const SizedBox(height: 16),
                 // Password
@@ -219,9 +223,39 @@ class _SignUpPageState extends NyPage<SignUpPage> {
 
                 // Google Button
                 afterNotLocked(
-                  'google_signup',
+                  'google_signup', // Note: keeping this key name for signup
                   child: () => _buildGoogleButton(),
-                  loading: SizedBox.shrink(),
+                  loading: Container(
+                    height: 40,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(28),
+                      border: Border.all(color: Colors.grey[300]!),
+                      color: Colors.grey[50],
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                                Colors.grey[600]!),
+                          ),
+                        ),
+                        SizedBox(width: 8),
+                        Text(
+                          'Signing up with Google...'.tr(),
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                            color: Colors.grey[600],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
 
                 const SizedBox(height: 20),
@@ -344,7 +378,7 @@ class _SignUpPageState extends NyPage<SignUpPage> {
     );
   }
 
-  Widget _buildPhoneField() {
+  Widget _buildInternationalPhoneField() {
     return Container(
       height: 45,
       decoration: BoxDecoration(
@@ -353,16 +387,41 @@ class _SignUpPageState extends NyPage<SignUpPage> {
       ),
       child: Row(
         children: [
-          // Country code section
-          Container(
-            width: 50,
-            padding: EdgeInsets.symmetric(horizontal: 10),
-            child: Center(
-              child: Text(
-                '+91',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w400,
+          // Country code selector - use ConstrainedBox to prevent overflow
+          ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: 100),
+            child: InkWell(
+              onTap: () {
+                showCountryPicker(
+                  context: context,
+                  showPhoneCode: true,
+                  onSelect: (Country country) {
+                    setState(() {
+                      _countryCode = '+${country.phoneCode}';
+                      _countryFlag = country.flagEmoji;
+                    });
+                  },
+                );
+              },
+              child: Container(
+                padding: EdgeInsets.symmetric(horizontal: 8),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(_countryFlag, style: TextStyle(fontSize: 16)),
+                    SizedBox(width: 2),
+                    Flexible(
+                      child: Text(
+                        _countryCode,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w400,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    Icon(Icons.arrow_drop_down, size: 14),
+                  ],
                 ),
               ),
             ),
@@ -385,22 +444,23 @@ class _SignUpPageState extends NyPage<SignUpPage> {
                 if (value?.isEmpty ?? true) {
                   return 'Please enter your phone number'.tr();
                 }
-                if ((value?.length ?? 0) < 10) {
+                // Basic validation - could be improved with region-specific rules
+                if ((value?.length ?? 0) < 5) {
                   return 'Please enter a valid phone number'.tr();
                 }
                 return null;
               },
               decoration: InputDecoration(
-                hintText: '10101 01010',
+                hintText: 'Phone number'.tr(),
                 hintStyle: TextStyle(color: Colors.grey),
                 contentPadding:
                     EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                border: InputBorder.none, // Remove borders
-                enabledBorder: InputBorder.none, // Remove borders
-                focusedBorder: InputBorder.none, // Remove borders
-                errorBorder: InputBorder.none, // Remove borders
-                disabledBorder: InputBorder.none, // Remove borders
-                focusedErrorBorder: InputBorder.none, // Remove borders
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+                errorBorder: InputBorder.none,
+                disabledBorder: InputBorder.none,
+                focusedErrorBorder: InputBorder.none,
               ),
             ),
           ),
@@ -410,22 +470,26 @@ class _SignUpPageState extends NyPage<SignUpPage> {
   }
 
   Widget _buildSignUpButton() {
+    bool isGoogleSignUpLoading = isLocked('google_signup');
+
     return Container(
       height: 40,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(28),
-        color: const Color(0xFFFFEB3B),
+        color:
+            isGoogleSignUpLoading ? Colors.grey[300] : const Color(0xFFFFEB3B),
       ),
       child: TextButton(
-        onPressed: _handleSignUp,
+        onPressed: isGoogleSignUpLoading ? null : _handleSignUp,
         style: TextButton.styleFrom(
-          foregroundColor: Colors.black,
+          foregroundColor:
+              isGoogleSignUpLoading ? Colors.grey[600] : Colors.black,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(28),
           ),
         ),
         child: Text(
-          'Sign Up'.tr(), // Changed from 'Sign In' to 'Sign Up'
+          'Sign Up'.tr(),
           style: TextStyle(
             fontSize: 14,
             fontWeight: FontWeight.w500,
@@ -436,31 +500,38 @@ class _SignUpPageState extends NyPage<SignUpPage> {
   }
 
   Widget _buildGoogleButton() {
+    bool isRegularSignUpLoading = isLocked('signup');
+
     return Container(
       height: 40,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(28),
         border: Border.all(color: Colors.grey[300]!),
+        color: isRegularSignUpLoading ? Colors.grey[50] : Colors.white,
       ),
       child: TextButton.icon(
-        onPressed: _handleGoogleSignIn,
-        icon: Image.asset(
-          "devicon_google.png",
-          height: 16,
-          width: 16,
-          errorBuilder: (context, error, stackTrace) =>
-              Icon(Icons.g_mobiledata, size: 24),
-        ).localAsset(),
+        onPressed: isRegularSignUpLoading ? null : _handleGoogleSignIn,
+        icon: Opacity(
+          opacity: isRegularSignUpLoading ? 0.5 : 1.0,
+          child: Image.asset(
+            "devicon_google.png",
+            height: 16,
+            width: 16,
+            errorBuilder: (context, error, stackTrace) =>
+                Icon(Icons.g_mobiledata, size: 24),
+          ).localAsset(),
+        ),
         label: Text(
           'Google'.tr(),
           style: TextStyle(
             fontSize: 16,
             fontWeight: FontWeight.w500,
-            color: Colors.black,
+            color: isRegularSignUpLoading ? Colors.grey[600] : Colors.black,
           ),
         ),
         style: TextButton.styleFrom(
-          foregroundColor: Colors.black,
+          foregroundColor:
+              isRegularSignUpLoading ? Colors.grey[600] : Colors.black,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(28),
           ),
@@ -485,7 +556,8 @@ class _SignUpPageState extends NyPage<SignUpPage> {
             email: _emailController.text,
             password: _passwordController.text,
             fullName: _fullNameController.text,
-            phoneNumber: '+91${_phoneController.text}', // Include country code
+            phoneNumber:
+                '$_countryCode${_phoneController.text}', // Include selected country code
           );
 
           // Show success toast
@@ -493,11 +565,8 @@ class _SignUpPageState extends NyPage<SignUpPage> {
             description: 'Account created successfully!'.tr(),
           );
 
-          // Preload essential data
-          // await preloadEssentialData();
-
           // Navigate to the main app
-          routeTo(BaseNavigationHub.path,
+          await routeTo(BaseNavigationHub.path,
               navigationType: NavigationType.pushAndRemoveUntil,
               removeUntilPredicate: (route) => false);
         } catch (e) {
@@ -513,20 +582,18 @@ class _SignUpPageState extends NyPage<SignUpPage> {
 
   Future<void> _handleGoogleSignIn() async {
     await lockRelease('google_signup', perform: () async {
+      // Use 'google_signup' for signup page
       try {
-        // Call the API service for Google sign in
-        await _userApiService.loginWithGoogle();
+        // Call the new Firebase method
+        await _userApiService.loginWithGoogleFirebase();
 
         // Show success toast
         showToastSuccess(
-          description: 'Google sign in successful'.tr(),
+          description: 'Google sign up successful'.tr(),
         );
 
-        // Preload essential data
-        // await preloadEssentialData();
-
         // Navigate to the main app
-        routeTo(BaseNavigationHub.path,
+        await routeTo(BaseNavigationHub.path,
             navigationType: NavigationType.pushAndRemoveUntil,
             removeUntilPredicate: (route) => false);
       } catch (e) {

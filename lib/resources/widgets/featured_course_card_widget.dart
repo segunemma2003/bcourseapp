@@ -28,92 +28,27 @@ class FeaturedCourseCard extends StatelessWidget {
             ),
           ],
         ),
-        child: Row(
-          children: [
-            // Left side - Image section
-            Expanded(
-              flex: 1,
-              child: Container(
-                color: Colors.green,
-                child: Image.network(
-                  course.image,
-                  fit: BoxFit.cover,
-                  errorBuilder: (context, error, stackTrace) {
-                    return Image.asset(
-                      'assets/images/profile_image.png',
-                      fit: BoxFit.cover,
-                    ).localAsset();
-                  },
-                  loadingBuilder: (context, child, loadingProgress) {
-                    if (loadingProgress == null) return child;
-                    return Center(child: CircularProgressIndicator());
-                  },
-                ),
-              ),
-            ),
-
-            // Right side - Text content
-            Expanded(
-              flex: 1,
-              child: Padding(
-                padding: EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    // English title - allowing natural text wrapping
-                    Text(
-                      course.title,
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        height: 1.3, // Improved line height for readability
-                      ),
-                      softWrap: true, // Enable text wrapping
-                      overflow: TextOverflow.ellipsis,
-                      maxLines: 3, // Allow up to 3 lines
-                    ),
-
-                    SizedBox(
-                        height: 8), // Small space between title and subtitle
-
-                    // Indian language subtitle
-                    Text(
-                      course.smallDesc,
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: Colors.grey[700],
-                        height: 1.2, // Slightly tighter line height
-                      ),
-                      softWrap: true,
-                      overflow: TextOverflow.ellipsis,
-                      maxLines: 2, // Allow up to 2 lines
-                    ),
-
-                    // Spacer to push category to bottom
-                    Spacer(),
-
-                    // Category label
-                    Container(
-                      padding:
-                          EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: Colors.grey[200],
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Text(
-                        course.categoryName,
-                        style: TextStyle(
-                          color: Colors.grey[700],
-                          fontSize: 12,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
+        child: ClipRRect(
+          borderRadius:
+              BorderRadius.circular(0), // Adjust if you want rounded corners
+          child: Image.network(
+            course.image,
+            fit: BoxFit.cover,
+            width: double.infinity,
+            height: double.infinity,
+            errorBuilder: (context, error, stackTrace) {
+              return Image.asset(
+                'assets/images/profile_image.png',
+                fit: BoxFit.cover,
+                width: double.infinity,
+                height: double.infinity,
+              ).localAsset();
+            },
+            loadingBuilder: (context, child, loadingProgress) {
+              if (loadingProgress == null) return child;
+              return Center(child: CircularProgressIndicator());
+            },
+          ),
         ),
       ),
     );

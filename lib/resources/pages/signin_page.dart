@@ -3,11 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_app/resources/pages/base_navigation_hub.dart';
 import 'package:flutter_app/resources/pages/forgot_password_page.dart';
 import 'package:flutter_app/resources/pages/sign_up_page.dart';
-import 'package:flutter_app/utils/system_util.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 
 import '../../app/networking/user_api_service.dart';
-import '../../app/providers/api_service_provider.dart';
 import '../widgets/logo_widget.dart';
 
 class SigninPage extends NyStatefulWidget {
@@ -167,7 +165,38 @@ class _SigninPageState extends NyPage<SigninPage> {
                 afterNotLocked(
                   'google_signin',
                   child: () => _buildGoogleButton(),
-                  loading: SizedBox.shrink(),
+                  loading: Container(
+                    height: 48,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(28),
+                      border: Border.all(color: Colors.grey[300]!),
+                      color: Colors.grey[
+                          50], // Slightly different background when loading
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                                Colors.grey[600]!),
+                          ),
+                        ),
+                        SizedBox(width: 12),
+                        Text(
+                          'Signing in with Google...'.tr(),
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                            color: Colors.grey[600],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
 
                 const SizedBox(height: 30),
@@ -295,16 +324,21 @@ class _SigninPageState extends NyPage<SigninPage> {
   }
 
   Widget _buildSignInButton() {
+    // Check if Google sign-in is in progress
+    bool isGoogleSignInLoading = isLocked('google_signin');
+
     return Container(
       height: 48,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(28),
-        color: const Color(0xFFFFEB3B),
+        color:
+            isGoogleSignInLoading ? Colors.grey[300] : const Color(0xFFFFEB3B),
       ),
       child: TextButton(
-        onPressed: _handleSignIn,
+        onPressed: isGoogleSignInLoading ? null : _handleSignIn,
         style: TextButton.styleFrom(
-          foregroundColor: Colors.black,
+          foregroundColor:
+              isGoogleSignInLoading ? Colors.grey[600] : Colors.black,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(28),
           ),
@@ -321,31 +355,38 @@ class _SigninPageState extends NyPage<SigninPage> {
   }
 
   Widget _buildGoogleButton() {
+    bool isRegularSignInLoading = isLocked('signin');
+
     return Container(
       height: 48,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(28),
         border: Border.all(color: Colors.grey[300]!),
+        color: isRegularSignInLoading ? Colors.grey[50] : Colors.white,
       ),
       child: TextButton.icon(
-        onPressed: _handleGoogleSignIn,
-        icon: Image.asset(
-          "devicon_google.png",
-          height: 20,
-          width: 20,
-          errorBuilder: (context, error, stackTrace) =>
-              Icon(Icons.g_mobiledata, size: 24),
-        ).localAsset(),
+        onPressed: isRegularSignInLoading ? null : _handleGoogleSignIn,
+        icon: Opacity(
+          opacity: isRegularSignInLoading ? 0.5 : 1.0,
+          child: Image.asset(
+            "devicon_google.png",
+            height: 20,
+            width: 20,
+            errorBuilder: (context, error, stackTrace) =>
+                Icon(Icons.g_mobiledata, size: 24),
+          ).localAsset(),
+        ),
         label: Text(
           'Google'.tr(),
           style: TextStyle(
             fontSize: 16,
             fontWeight: FontWeight.w500,
-            color: Colors.black,
+            color: isRegularSignInLoading ? Colors.grey[600] : Colors.black,
           ),
         ),
         style: TextButton.styleFrom(
-          foregroundColor: Colors.black,
+          foregroundColor:
+              isRegularSignInLoading ? Colors.grey[600] : Colors.black,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(28),
           ),
@@ -373,7 +414,7 @@ class _SigninPageState extends NyPage<SigninPage> {
           // await AppBootstrap.refreshData();
 
           // Navigate to the main app
-          routeTo(BaseNavigationHub.path,
+          await routeTo(BaseNavigationHub.path,
               navigationType: NavigationType.pushAndRemoveUntil,
               removeUntilPredicate: (route) => false);
         } catch (e) {
@@ -390,20 +431,16 @@ class _SigninPageState extends NyPage<SigninPage> {
   Future<void> _handleGoogleSignIn() async {
     await lockRelease('google_signin', perform: () async {
       try {
-        // Call the API service for Google sign in
-        await _userApiService.loginWithGoogle();
+        // Call the new Firebase method
+        await _userApiService.loginWithGoogleFirebase();
 
         // Show success toast
         showToastSuccess(
           description: 'Google sign in successful'.tr(),
         );
 
-        // Preload essential data
-        // await AppBootstrap.refreshData();
-        // await preloadEssentialData();
-
         // Navigate to the main app
-        routeTo(BaseNavigationHub.path,
+        await routeTo(BaseNavigationHub.path,
             navigationType: NavigationType.pushAndRemoveUntil,
             removeUntilPredicate: (route) => false);
       } catch (e) {

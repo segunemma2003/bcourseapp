@@ -117,7 +117,7 @@ class _ExploreTabState extends NyState<ExploreTab> {
           .toList();
 
       // Sort by date if available, or just take the first 10
-      if (courses.isNotEmpty && courses[0].dateUploaded != null) {
+      if (courses.isNotEmpty) {
         courses.sort((a, b) => b.dateUploaded.compareTo(a.dateUploaded));
       }
 
@@ -336,29 +336,29 @@ class _ExploreTabState extends NyState<ExploreTab> {
             ),
           ),
           // Notification bell with action
-          Stack(
-            children: [
-              IconButton(
-                icon: Icon(Icons.notifications_none),
-                onPressed: () {
-                  routeTo(NotificationsPage.path);
-                },
-              ),
-              // Notification dot - can be conditionally shown
-              Positioned(
-                top: 8,
-                right: 8,
-                child: Container(
-                  width: 8,
-                  height: 8,
-                  decoration: BoxDecoration(
-                    color: Colors.red,
-                    shape: BoxShape.circle,
-                  ),
-                ),
-              ),
-            ],
-          ),
+          // Stack(
+          //   children: [
+          //     IconButton(
+          //       icon: Icon(Icons.notifications_none),
+          //       onPressed: () {
+          //         routeTo(NotificationsPage.path);
+          //       },
+          //     ),
+          //     // Notification dot - can be conditionally shown
+          //     Positioned(
+          //       top: 8,
+          //       right: 8,
+          //       child: Container(
+          //         width: 8,
+          //         height: 8,
+          //         decoration: BoxDecoration(
+          //           color: Colors.red,
+          //           shape: BoxShape.circle,
+          //         ),
+          //       ),
+          //     ),
+          //   ],
+          // ),
         ],
       ),
     );

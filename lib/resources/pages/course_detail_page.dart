@@ -5,9 +5,6 @@ import 'package:flutter_app/resources/pages/enrollment_plan_page.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
-import '../../app/models/curriculum.dart';
-import '../../app/models/objectives.dart';
-import '../../app/models/requirements.dart';
 import '../../app/models/wishlist.dart';
 import '../../app/networking/course_api_service.dart';
 import '../../app/networking/purchase_api_service.dart';
@@ -29,59 +26,94 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
   bool _isInWishlist = false;
   bool _isEnrolled = false;
   bool _isLoadingWishlist = false;
-  bool _isInitializing = true; // Added to track initialization state
+  bool _isInitializing = true;
+  bool _hasValidSubscription = false;
+  bool _isLifetimeSubscription = false;
+  DateTime? _subscriptionExpiryDate;
+  String _subscriptionStatus = 'not_enrolled';
+  String _subscriptionPlanName = 'Unknown';
 
-  // Total duration calculation
   String _totalDuration = "- minutes";
+  bool _isChecking = false;
 
-  // Download tracking
   StreamSubscription? _downloadProgressSubscription;
 
   final CourseApiService _courseApiService = CourseApiService();
   final PurchaseApiService _purchaseApiService = PurchaseApiService();
   final VideoService _videoService = VideoService();
-
-  // Scroll controller
   final ScrollController _scrollController = ScrollController();
 
   @override
   void initState() {
     super.initState();
 
-    // Listen for download progress updates
-    // _subscribeToDownloadProgress();
+    Future.microtask(() async {
+      try {
+        await _videoService.initialize();
+      } catch (e) {
+        NyLogger.error('Error initializing video service: $e');
+      }
+    });
+
+    _subscribeToDownloadProgress();
   }
 
-  // Subscribe to download progress updates
-  // void _subscribeToDownloadProgress() {
-  //   _downloadProgressSubscription =
-  //       _videoService.progressStream.listen((update) {
-  //     // CRITICAL: Always check if widget is still mounted before calling setState
-  //     if (!mounted) return;
+  void _extractSubscriptionDetails() {
+    if (courseDetail == null) return;
 
-  //     setState(() {
-  //       // The update happens in VideoService, we just need to refresh the UI
-  //     });
-  //   });
-  // }
+    _hasValidSubscription = courseDetail!.hasValidSubscription;
+    _isLifetimeSubscription = courseDetail!.isLifetimeSubscription;
+    _subscriptionExpiryDate = courseDetail!.subscriptionExpiryDate;
+    _subscriptionStatus = courseDetail!.subscriptionStatus;
+    _subscriptionPlanName = courseDetail!.subscriptionPlanName;
+  }
+
+  Future<void> _refreshEnrollmentDetails(int courseId) async {
+    try {
+      Course updatedCourse =
+          await _courseApiService.getCourseWithEnrollmentDetails(courseId);
+      if (mounted) {
+        setState(() {
+          courseDetail = updatedCourse;
+          _extractSubscriptionDetails();
+        });
+      }
+    } catch (e) {
+      NyLogger.error('Error refreshing enrollment details: $e');
+    }
+  }
+
+  void _subscribeToDownloadProgress() {
+    _downloadProgressSubscription = _videoService.progressStream.listen(
+      (update) {
+        if (!mounted) return;
+
+        if (update.containsKey('type') && update['type'] == 'error') {
+          if (update['errorType'] == 'diskSpace') {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(trans(update['message'] ?? "Storage error")),
+                backgroundColor: Colors.red,
+                duration: const Duration(seconds: 3),
+              ),
+            );
+          }
+        }
+      },
+      onError: (error) {
+        NyLogger.error('Error in download progress stream: $error');
+      },
+    );
+  }
 
   @override
   void dispose() {
-    // Cancel download progress subscription
     if (_downloadProgressSubscription != null) {
       _downloadProgressSubscription!.cancel();
       _downloadProgressSubscription = null;
     }
-
-    // Dispose of scroll controller
     _scrollController.dispose();
-
     super.dispose();
-  }
-
-  @override
-  boot() async {
-    // Initialize services
   }
 
   @override
@@ -89,85 +121,88 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
 
   @override
   get init => () async {
-        // Start multiple loading indicators
         setLoading(true, name: 'course_detail');
         setLoading(true, name: 'curriculum');
         setLoading(true, name: 'objectives');
         setLoading(true, name: 'requirements');
 
         try {
-          // Get course data from route arguments
           Map<String, dynamic> data = widget.data();
           if (data.containsKey('course') && data['course'] != null) {
             courseDetail = data['course'];
+            // Use the enrollment status from the course model
+            _isEnrolled = courseDetail!.isEnrolled;
+            _extractSubscriptionDetails();
           } else {
-            // Handle case when course data is missing
             showToastDanger(description: "Course information is missing");
             pop();
             return;
           }
 
-          // Convert course ID to int for API calls
+          if (_isEnrolled) {
+            await _refreshEnrollmentDetails(courseDetail!.id);
+          }
+
           int courseId = courseDetail!.id;
+          List<Future> futures = [];
 
-          // Load each data type separately for better error handling
-          // We use Future.microtask to allow the UI to update between each task
-
-          // Load curriculum items first - most important
-          await _loadCourseCurriculum(courseId).catchError((e) {
-            print('Error loading curriculum: $e');
-            // Set empty list on error
+          // Load curriculum
+          futures.add(_loadCourseCurriculum(courseId)
+              .timeout(Duration(seconds: 10))
+              .then((_) {
+            if (mounted) {
+              setLoading(false, name: 'curriculum');
+              _calculateTotalDuration();
+            }
+          }).catchError((e) {
+            NyLogger.error('Error loading curriculum: $e');
             curriculumItems = [];
-          });
+            if (mounted) setLoading(false, name: 'curriculum');
+            return <dynamic>[];
+          }));
 
-          // Signal that the curriculum is loaded
-          if (mounted) {
-            setLoading(false, name: 'curriculum');
-            // Calculate total duration once curriculum is loaded
-            _calculateTotalDuration();
-          }
-
-          // Load objectives next
-          await _loadCourseObjectives(courseId).catchError((e) {
-            print('Error loading objectives: $e');
+          // Load objectives
+          futures.add(_loadCourseObjectives(courseId)
+              .timeout(Duration(seconds: 10))
+              .then((_) {
+            if (mounted) setLoading(false, name: 'objectives');
+          }).catchError((e) {
+            NyLogger.error('Error loading objectives: $e');
             objectives = [];
-          });
+            if (mounted) setLoading(false, name: 'objectives');
+            return <dynamic>[];
+          }));
 
-          if (mounted) {
-            setLoading(false, name: 'objectives');
-          }
-
-          // Load requirements next
-          await _loadCourseRequirements(courseId).catchError((e) {
-            print('Error loading requirements: $e');
+          // Load requirements
+          futures.add(_loadCourseRequirements(courseId)
+              .timeout(Duration(seconds: 10))
+              .then((_) {
+            if (mounted) setLoading(false, name: 'requirements');
+          }).catchError((e) {
+            NyLogger.error('Error loading requirements: $e');
             requirements = [];
-          });
+            if (mounted) setLoading(false, name: 'requirements');
+            return <dynamic>[];
+          }));
+
+          await Future.wait(futures);
 
           if (mounted) {
-            setLoading(false, name: 'requirements');
+            // Only check wishlist status if not enrolled (optimization)
+            if (!_isEnrolled) {
+              _checkWishlistStatus().catchError((e) {
+                NyLogger.error('Error checking wishlist status: $e');
+                return false;
+              });
+            }
           }
 
-          // Load user-specific data in parallel
-          await Future.wait([
-            _checkWishlistStatus(),
-            _checkEnrollmentStatus(),
-          ]).catchError((e) {
-            print('Error loading user data: $e');
-          });
-
-          // Mark initialization as complete
           _isInitializing = false;
-
-          // Complete all loading indicators
-          if (mounted) {
-            setLoading(false, name: 'course_detail');
-          }
         } catch (e) {
-          print('Error initializing course detail: $e');
-          showToastDanger(description: "Failed to load course details");
-
-          // Complete loading indicators even on error
+          NyLogger.error('Error initializing course detail: $e');
+        } finally {
           if (mounted) {
+            _isInitializing = false;
             setLoading(false, name: 'course_detail');
             setLoading(false, name: 'curriculum');
             setLoading(false, name: 'objectives');
@@ -176,8 +211,9 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
         }
       };
 
-  // Calculate total duration from curriculum items
   void _calculateTotalDuration() {
+    if (!mounted) return;
+
     try {
       int totalSeconds = 0;
       for (var item in curriculumItems) {
@@ -190,14 +226,12 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
               int seconds = int.parse(parts[1]);
               totalSeconds += (minutes * 60) + seconds;
             } catch (e) {
-              // Skip invalid durations
-              print('Error parsing duration: $e');
+              NyLogger.error('Error parsing duration: $e');
             }
           }
         }
       }
 
-      // Format total duration
       int hours = totalSeconds ~/ 3600;
       int minutes = (totalSeconds % 3600) ~/ 60;
 
@@ -206,7 +240,7 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
             hours > 0 ? "$hours hours $minutes minutes" : "$minutes minutes";
       });
     } catch (e) {
-      print('Error calculating total duration: $e');
+      NyLogger.error('Error calculating total duration: $e');
       setState(() {
         _totalDuration = "- minutes";
       });
@@ -215,15 +249,127 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
 
   Future<void> _loadCourseCurriculum(int courseId) async {
     try {
-      curriculumItems = await _courseApiService.getCourseCurriculum(courseId);
-      // Sort by order field
-      curriculumItems.sort((a, b) => a['order'].compareTo(b['order']));
+      List<dynamic> result =
+          await _courseApiService.getCourseCurriculum(courseId);
+
+      result.sort((a, b) => a['order'].compareTo(b['order']));
+
+      if (mounted) {
+        setState(() {
+          curriculumItems = result;
+        });
+      }
     } catch (e) {
-      print('Error loading curriculum: $e');
-      // Set empty list on error
-      curriculumItems = [];
-      rethrow; // Rethrow to indicate this operation failed
+      NyLogger.error('Error loading curriculum: $e');
+      if (mounted) {
+        setState(() {
+          curriculumItems = [];
+        });
+      }
+      rethrow;
     }
+  }
+
+  void _showSubscriptionExpiredDialog() {
+    showDialog(
+        context: context,
+        builder: (BuildContext context) {
+          return AlertDialog(
+            title: Text(trans("Subscription Expired")),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(trans("Your subscription to this course has expired.")),
+                SizedBox(height: 8),
+                if (_subscriptionExpiryDate != null)
+                  Text(
+                    trans(
+                        "Expired on: ${_subscriptionExpiryDate!.day}/${_subscriptionExpiryDate!.month}/${_subscriptionExpiryDate!.year}"),
+                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                  ),
+                SizedBox(height: 8),
+                Text(trans(
+                    "Please renew your subscription to continue accessing the course content.")),
+              ],
+            ),
+            actions: [
+              TextButton(
+                child: Text(trans("Cancel")),
+                onPressed: () => Navigator.pop(context),
+              ),
+              TextButton(
+                child: Text(trans("Renew Subscription")),
+                style: TextButton.styleFrom(foregroundColor: Colors.amber),
+                onPressed: () {
+                  Navigator.pop(context);
+                  _handleSubscriptionRenewal();
+                },
+              ),
+            ],
+          );
+        });
+  }
+
+  void _handleSubscriptionRenewal() {
+    routeTo(EnrollmentPlanPage.path, data: {
+      'course': courseDetail,
+      'curriculum': curriculumItems,
+      'isRenewal': true,
+    });
+  }
+
+  Widget _buildSubscriptionExpiredBanner() {
+    return Container(
+      width: double.infinity,
+      color: Colors.red.shade50,
+      padding: EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.error_outline, color: Colors.red, size: 18),
+              SizedBox(width: 8),
+              Text(
+                trans("Subscription Expired"),
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.red,
+                  fontSize: 14,
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: 4),
+          Text(
+            trans(
+                "Your subscription has expired. Please renew to continue accessing the course."),
+            style: TextStyle(fontSize: 12),
+          ),
+          if (_subscriptionExpiryDate != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4.0),
+              child: Text(
+                trans(
+                    "Expired on: ${_subscriptionExpiryDate!.day}/${_subscriptionExpiryDate!.month}/${_subscriptionExpiryDate!.year}"),
+                style: TextStyle(fontSize: 10, color: Colors.grey[600]),
+              ),
+            ),
+          SizedBox(height: 8),
+          ElevatedButton(
+            onPressed: _handleSubscriptionRenewal,
+            child: Text(trans("Renew Subscription")),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              textStyle: TextStyle(fontSize: 12),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _loadCourseObjectives(int courseId) async {
@@ -231,9 +377,8 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
       objectives = await _courseApiService.getCourseObjectives(courseId);
     } catch (e) {
       print('Error loading objectives: $e');
-      // Set empty list on error
       objectives = [];
-      rethrow; // Rethrow to indicate this operation failed
+      rethrow;
     }
   }
 
@@ -242,15 +387,13 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
       requirements = await _courseApiService.getCourseRequirements(courseId);
     } catch (e) {
       print('Error loading requirements: $e');
-      // Set empty list on error
       requirements = [];
-      rethrow; // Rethrow to indicate this operation failed
+      rethrow;
     }
   }
 
   Future<void> _checkWishlistStatus() async {
     try {
-      // Only check if authenticated
       if (await Auth.isAuthenticated()) {
         final wishlistData = await _courseApiService.getWishlist();
         final wishlistItems =
@@ -262,31 +405,13 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
       }
     } catch (e) {
       print('Error checking wishlist status: $e');
-      rethrow; // Rethrow to indicate this operation failed
-    }
-  }
-
-  Future<void> _checkEnrollmentStatus() async {
-    try {
-      // Only check if authenticated
-      if (await Auth.isAuthenticated()) {
-        final enrollments = await _courseApiService.getEnrolledCourses();
-        setState(() {
-          _isEnrolled = enrollments.any((item) =>
-              item['course'] != null &&
-              item['course']['id'].toString() == courseDetail!.id.toString());
-        });
-      }
-    } catch (e) {
-      print('Error checking enrollment status: $e');
-      rethrow; // Rethrow to indicate this operation failed
+      rethrow;
     }
   }
 
   Future<void> _toggleWishlist() async {
     if (courseDetail == null) return;
 
-    // Check authentication
     bool isAuthenticated = await Auth.isAuthenticated();
     if (!isAuthenticated) {
       confirmAction(() {
@@ -304,12 +429,10 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
 
     try {
       if (_isInWishlist) {
-        // Find wishlist item id first
         final wishlistData = await _courseApiService.getWishlist();
         final wishlistItems =
             wishlistData.map((data) => Wishlist.fromJson(data)).toList();
 
-        // Instead of using firstWhere with orElse, use where and check if the result is not empty
         final matchingItems = wishlistItems
             .where(
               (item) => item.courseId.toString() == courseDetail!.id.toString(),
@@ -317,7 +440,6 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
             .toList();
 
         if (matchingItems.isNotEmpty) {
-          // Remove from wishlist - use the first matching item
           await _courseApiService.removeFromWishlist(matchingItems.first.id);
           setState(() {
             _isInWishlist = false;
@@ -325,7 +447,6 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
           showToastInfo(description: trans("Course removed from wishlist"));
         }
       } else {
-        // Add to wishlist
         await _courseApiService.addToWishlist(courseDetail!.id);
         setState(() {
           _isInWishlist = true;
@@ -333,7 +454,6 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
         showToastSuccess(description: trans("Course added to wishlist"));
       }
 
-      // Notify other tabs about the change
       updateState('/search_tab', data: {
         "update_wishlist_status": {
           "course_id": courseDetail!.id,
@@ -354,17 +474,13 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
   }
 
   Future<void> _handleEnrollment() async {
-    if (courseDetail == null) return;
+    if (courseDetail == null || _isChecking) return;
 
-    // If already enrolled, just show curriculum
-    if (_isEnrolled) {
-      _navigateToCurriculum();
-      return;
-    }
+    _isChecking = true;
 
-    // Check authentication
     bool isAuthenticated = await Auth.isAuthenticated();
     if (!isAuthenticated) {
+      _isChecking = false;
       confirmAction(() {
         routeTo(SigninPage.path);
       },
@@ -374,64 +490,104 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
       return;
     }
 
-    // Show loading indicator
     showLoadingDialog(trans("Checking subscription..."));
 
-    // Check if user has an active subscription
     try {
       bool hasActiveSubscription =
           await _purchaseApiService.hasActiveSubscription();
 
-      // Hide loading dialog
-      Navigator.pop(context);
+      if (mounted && Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
+
+      if (!mounted) {
+        _isChecking = false;
+        return;
+      }
 
       if (hasActiveSubscription) {
-        // Show enrolling progress
         showLoadingDialog(trans("Enrolling..."));
 
-        // User already has subscription, directly enroll
         await _courseApiService.enrollInCourse(courseDetail!.id);
 
-        // Hide loading dialog
-        if (mounted) Navigator.pop(context);
+        if (mounted && Navigator.canPop(context)) {
+          Navigator.pop(context);
+        }
+
+        if (!mounted) {
+          _isChecking = false;
+          return;
+        }
 
         showToastSuccess(description: trans("Successfully enrolled in course"));
         setState(() {
           _isEnrolled = true;
         });
 
-        // Notify other tabs
-        updateState('/search_tab', data: "refresh_courses");
-        updateState('/home_tab', data: "refresh_enrollments");
+        Future.microtask(() {
+          updateState('/search_tab', data: "refresh_courses");
+          updateState('/home_tab', data: "refresh_enrollments");
+        });
 
-        // Navigate to curriculum
         _navigateToCurriculum();
       } else {
-        // User needs a subscription, navigate to subscription page
-        routeTo(EnrollmentPlanPage.path, data: {'course': courseDetail});
+        // Pass curriculum data to avoid extra API call
+        routeTo(EnrollmentPlanPage.path,
+            data: {'course': courseDetail, 'curriculum': curriculumItems});
       }
     } catch (e) {
-      // Hide loading dialog if still showing
       if (mounted && Navigator.canPop(context)) {
         Navigator.pop(context);
       }
 
-      print('Error handling enrollment: $e');
-      showToastDanger(
-          description: trans("An error occurred, please try again"));
+      NyLogger.error('Error handling enrollment: $e');
+      if (mounted) {
+        showToastDanger(
+            description: trans("An error occurred, please try again"));
+      }
+    } finally {
+      _isChecking = false;
     }
   }
 
-  // Helper method to navigate to curriculum page
   void _navigateToCurriculum() {
-    // Use Future.microtask to prevent UI blocking
-    Future.microtask(() {
-      routeTo(CourseCurriculumPage.path,
-          data: {'course': courseDetail, 'curriculum': curriculumItems});
+    if (!mounted || courseDetail == null) return;
+
+    if (curriculumItems.isEmpty) {
+      showLoadingDialog(trans("Preparing curriculum..."));
+    }
+
+    Future.microtask(() async {
+      try {
+        if (curriculumItems.isEmpty) {
+          try {
+            await _loadCourseCurriculum(courseDetail!.id);
+            if (mounted && Navigator.canPop(context)) {
+              Navigator.pop(context);
+            }
+          } catch (e) {
+            NyLogger.error('Error loading curriculum for navigation: $e');
+            if (mounted && Navigator.canPop(context)) {
+              Navigator.pop(context);
+            }
+          }
+        }
+
+        // Pass curriculum data to avoid extra API call
+        if (mounted) {
+          routeTo(CourseCurriculumPage.path,
+              data: {'course': courseDetail, 'curriculum': curriculumItems});
+        }
+      } catch (e) {
+        NyLogger.error('Error navigating to curriculum: $e');
+        if (mounted) {
+          showToastDanger(
+              description: trans("Failed to open course curriculum"));
+        }
+      }
     });
   }
 
-  // Show loading dialog
   void showLoadingDialog(String message) {
     showDialog(
       context: context,
@@ -451,33 +607,45 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
   }
 
   void _promptVideoDownload(int index) async {
-    // Check if user is authenticated
-    bool isAuthenticated = await Auth.isAuthenticated();
-    if (!isAuthenticated) {
-      confirmAction(() {
-        routeTo(SigninPage.path);
-      },
-          title: trans("You need to login to watch videos"),
-          confirmText: trans("Login"),
-          dismissText: trans("Cancel"));
-      return;
-    }
+    if (_isChecking) return;
+    _isChecking = true;
 
-    // Check if enrolled
-    if (!_isEnrolled) {
-      confirmAction(() {
-        _handleEnrollment();
-      },
-          title: trans("Enrollment Required"),
-          // message:
-          //     trans("You need to enroll in this course to access the videos."),
-          confirmText: trans("Enroll Now"),
-          dismissText: trans("Cancel"));
-      return;
-    }
+    try {
+      bool isAuthenticated = await Auth.isAuthenticated();
+      if (!isAuthenticated) {
+        _isChecking = false;
+        confirmAction(() {
+          routeTo(SigninPage.path);
+        },
+            title: trans("You need to login to watch videos"),
+            confirmText: trans("Login"),
+            dismissText: trans("Cancel"));
+        return;
+      }
 
-    // If enrolled, navigate to curriculum page
-    _navigateToCurriculum();
+      if (!_isEnrolled) {
+        _isChecking = false;
+        confirmAction(() {
+          _handleEnrollment();
+        },
+            title: trans("Enrollment Required"),
+            confirmText: trans("Enroll Now"),
+            dismissText: trans("Cancel"));
+        return;
+      }
+
+      if (!_hasValidSubscription) {
+        _isChecking = false;
+        _showSubscriptionExpiredDialog();
+        return;
+      }
+
+      _isChecking = false;
+      _navigateToCurriculum();
+    } catch (e) {
+      _isChecking = false;
+      NyLogger.error('Error in _promptVideoDownload: $e');
+    }
   }
 
   @override
@@ -487,20 +655,18 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
-        automaticallyImplyLeading: false, // Don't show default back button
+        automaticallyImplyLeading: false,
         leading: IconButton(
           icon: Icon(Icons.arrow_back, color: Colors.black),
           onPressed: () => pop(),
         ),
-        title: SizedBox(), // Empty title
-        // Add a refresh button to the app bar
+        title: SizedBox(),
         actions: [
           IconButton(
             icon: Icon(Icons.refresh, color: Colors.black),
             onPressed: _isInitializing
-                ? null // Disable when initializing
+                ? null
                 : () {
-                    // Refresh the page data
                     setLoading(true, name: 'course_detail');
                     init();
                   },
@@ -511,69 +677,27 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
         loadingKey: 'course_detail',
         child: () => RefreshIndicator(
           onRefresh: () async {
-            // Pull-to-refresh functionality
             setLoading(true, name: 'course_detail');
             await init();
           },
           child: SingleChildScrollView(
             controller: _scrollController,
-            physics: AlwaysScrollableScrollPhysics(), // Always scrollable
+            physics: AlwaysScrollableScrollPhysics(),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Hero Image with CachedNetworkImage for better loading
                 _buildCourseImage(),
-
-                // Course Title and Subtitle
+                if (_isEnrolled && !_hasValidSubscription)
+                  _buildSubscriptionExpiredBanner(),
                 _buildCourseInfo(),
-
-                // Objectives/What you'll achieve
                 _buildAchievementsSection(),
-
-                // Course Curriculum - with white background and box shadow
                 _buildCurriculumSection(),
-
-                // Requirements - with white background and box shadow
                 _buildRequirementsSection(),
-
-                // Bottom action button
                 _buildBottomAction(),
-
-                // Add some bottom padding for safety
                 SizedBox(height: 20),
               ],
             ),
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildCourseImage() {
-    return Container(
-      height: 200,
-      width: double.infinity,
-      child: CachedNetworkImage(
-        imageUrl: courseDetail?.image ?? '',
-        height: 200,
-        width: double.infinity,
-        fit: BoxFit.cover,
-        placeholder: (context, url) => Container(
-          height: 200,
-          width: double.infinity,
-          color: Colors.grey[300],
-          child: Center(
-            child: CircularProgressIndicator(
-              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-            ),
-          ),
-        ),
-        errorWidget: (context, url, error) => Container(
-          height: 200,
-          width: double.infinity,
-          color: Colors.grey[300],
-          child:
-              Icon(Icons.image_not_supported, color: Colors.white70, size: 50),
         ),
       ),
     );
@@ -636,14 +760,13 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
               ),
               SizedBox(width: 4),
               Text(
-                courseDetail?.location ?? '',
+                "Recorded",
                 style: TextStyle(color: Colors.black, fontSize: 10),
               ),
             ],
           ),
           SizedBox(height: 24),
 
-          // Only show Enroll Button if not enrolled
           if (!_isEnrolled)
             Container(
               width: double.infinity,
@@ -659,7 +782,7 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
                   ),
                 ),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Color(0xFFEFE458), // Yellow
+                  backgroundColor: Color(0xFFEFE458),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(25),
                   ),
@@ -681,7 +804,7 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
                   ),
                 ),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Color(0xFFEFE458), // Yellow
+                  backgroundColor: Color(0xFFEFE458),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(25),
                   ),
@@ -690,52 +813,83 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
             ),
           SizedBox(height: 12),
 
-          // Wishlist Button
-          Container(
-            width: double.infinity,
-            height: 50,
-            child: OutlinedButton(
-              onPressed: _isLoadingWishlist ? null : _toggleWishlist,
-              child: _isLoadingWishlist
-                  ? SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        valueColor:
-                            AlwaysStoppedAnimation<Color>(Colors.black54),
-                      ))
-                  : Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          _isInWishlist
-                              ? Icons.favorite
-                              : Icons.favorite_border,
-                          color: _isInWishlist ? Colors.red : Colors.black,
-                          size: 18,
-                        ),
-                        SizedBox(width: 8),
-                        Text(
-                          _isInWishlist
-                              ? trans('Remove from Wishlist')
-                              : trans('Add to Wishlist'),
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: Colors.black,
+          // Only show wishlist button if not enrolled
+          if (!_isEnrolled)
+            Container(
+              width: double.infinity,
+              height: 50,
+              child: OutlinedButton(
+                onPressed: _isLoadingWishlist ? null : _toggleWishlist,
+                child: _isLoadingWishlist
+                    ? SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor:
+                              AlwaysStoppedAnimation<Color>(Colors.black54),
+                        ))
+                    : Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            _isInWishlist
+                                ? Icons.favorite
+                                : Icons.favorite_border,
+                            color: _isInWishlist ? Colors.red : Colors.black,
+                            size: 18,
                           ),
-                        ),
-                      ],
-                    ),
-              style: OutlinedButton.styleFrom(
-                side: BorderSide(color: Colors.black),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(25),
+                          SizedBox(width: 8),
+                          Text(
+                            _isInWishlist
+                                ? trans('Remove from Wishlist')
+                                : trans('Add to Wishlist'),
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Colors.black,
+                            ),
+                          ),
+                        ],
+                      ),
+                style: OutlinedButton.styleFrom(
+                  side: BorderSide(color: Colors.black),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(25),
+                  ),
                 ),
               ),
             ),
-          ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildCourseImage() {
+    return Container(
+      height: 200,
+      width: double.infinity,
+      child: CachedNetworkImage(
+        imageUrl: courseDetail?.image ?? '',
+        height: 200,
+        width: double.infinity,
+        fit: BoxFit.cover,
+        placeholder: (context, url) => Container(
+          height: 200,
+          width: double.infinity,
+          color: Colors.grey[300],
+          child: Center(
+            child: CircularProgressIndicator(
+              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+            ),
+          ),
+        ),
+        errorWidget: (context, url, error) => Container(
+          height: 200,
+          width: double.infinity,
+          color: Colors.grey[300],
+          child:
+              Icon(Icons.image_not_supported, color: Colors.white70, size: 50),
+        ),
       ),
     );
   }
@@ -756,7 +910,6 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
               ),
             ),
             SizedBox(height: 16),
-            // Build achievement items from API data
             if (objectives.isEmpty)
               Text(
                 trans('No objectives available for this course'),
@@ -813,7 +966,6 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
               ),
             ),
             SizedBox(height: 10),
-            // Check if curriculum is available
             if (curriculumItems.isEmpty)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 16.0),
@@ -828,7 +980,6 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
                 ),
               )
             else
-              // Always show only first 5 items
               ListView.builder(
                 shrinkWrap: true,
                 physics: NeverScrollableScrollPhysics(),
@@ -837,7 +988,7 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
                 itemBuilder: (context, index) {
                   final item = curriculumItems[index];
                   return _buildCurriculumItem(
-                    index + 1, // Convert to 1-based index for display
+                    index + 1,
                     item['title'] ?? 'Class Introduction Video',
                     item['duration'] ?? '5:05',
                     videoUrl: item['video_url'] ?? '',
@@ -846,8 +997,6 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
                 },
               ),
             SizedBox(height: 10),
-
-            // Only show "See all Videos" button if user is enrolled or if there are more than 5 videos
             if (_isEnrolled || curriculumItems.length > 5)
               GestureDetector(
                 onTap: () {
@@ -859,14 +1008,14 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
                     Text(
                       trans('See all Videos'),
                       style: TextStyle(
-                        color: Color(0xFFE5A200), // Yellow color
+                        color: Color(0xFFE5A200),
                         fontSize: 14,
                       ),
                     ),
                     Icon(
                       Icons.arrow_forward,
                       size: 16,
-                      color: Color(0xFFE5A200), // Matching icon color
+                      color: Color(0xFFE5A200),
                     ),
                   ],
                 ),
@@ -906,7 +1055,6 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
               ),
             ),
             SizedBox(height: 16),
-            // Check if requirements are available
             if (requirements.isEmpty)
               Text(
                 trans('No requirements specified for this course'),
@@ -948,7 +1096,7 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
                 ),
               ),
               style: ElevatedButton.styleFrom(
-                backgroundColor: Color(0xFFEFE458), // Yellow
+                backgroundColor: Color(0xFFEFE458),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(25),
                 ),
@@ -995,7 +1143,6 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
       padding: const EdgeInsets.only(bottom: 12.0),
       child: Row(
         children: [
-          // Simple text number without background
           Container(
             width: 24,
             height: 24,

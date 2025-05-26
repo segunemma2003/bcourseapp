@@ -1,13 +1,16 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_app/app/services/video_service.dart';
+import 'package:flutter_app/resources/pages/base_navigation_hub.dart';
+import 'package:flutter_app/resources/pages/course_curriculum_page.dart';
+import 'package:flutter_app/resources/pages/course_detail_page.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 import 'package:razorpay_flutter/razorpay_flutter.dart';
 
 import '../../app/models/course.dart';
 import '../../app/models/enrollment.dart';
 import '../../app/networking/course_api_service.dart';
-import '../../app/networking/purchase_api_service.dart';
-import '../../utils/enrollment_data.dart';
+import 'package:uuid/uuid.dart';
 
 class EnrollmentPlanPage extends NyStatefulWidget {
   static RouteView path = ("/enrollment-plan", (_) => EnrollmentPlanPage());
@@ -18,18 +21,24 @@ class EnrollmentPlanPage extends NyStatefulWidget {
 
 class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
   Course? course;
-  int selectedPlanIndex = 0; // Default to first plan (PRO)
+  int selectedPlanIndex = 0;
   List<SubscriptionPlan> subscriptionPlans = [];
   bool _isProcessingPayment = false;
+  VideoService _videoService = VideoService();
+  bool isRenewal = false;
 
-  // Initialize Razorpay
   late Razorpay _razorpay;
+  List<dynamic> curriculumItems = [];
+  String? username;
+  String? email;
+  Course? _previousCourse;
+  String? _previousSubscriptionStatus;
+  DateTime? _previousExpiryDate;
 
   @override
   void initState() {
     super.initState();
 
-    // Initialize Razorpay
     _razorpay = Razorpay();
     _razorpay.on(Razorpay.EVENT_PAYMENT_SUCCESS, _handlePaymentSuccess);
     _razorpay.on(Razorpay.EVENT_PAYMENT_ERROR, _handlePaymentError);
@@ -38,7 +47,6 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
 
   @override
   void dispose() {
-    // Clean up Razorpay
     _razorpay.clear();
     super.dispose();
   }
@@ -47,41 +55,115 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
   get init => () async {
         setLoading(true, name: 'fetch_plans');
 
-        // Get course data from previous page
         Map<String, dynamic> data = widget.data();
         if (data.containsKey('course') && data['course'] != null) {
           course = data['course'];
+          _previousCourse = course;
+          _previousSubscriptionStatus = course!.subscriptionStatus;
+          _previousExpiryDate = course!.subscriptionExpiryDate;
         } else {
-          // Handle missing course data
           showToastWarning(description: trans("Course information is missing"));
           pop();
           return;
         }
+
+        if (data.containsKey('isRenewal') && data['isRenewal'] == true) {
+          isRenewal = true;
+        }
+
+        if (isRenewal) {
+          await _validateCurrentSubscriptionStatus();
+        }
+        // Get curriculum from data if available, otherwise fetch it
+        if (data.containsKey('curriculum') && data['curriculum'] != null) {
+          curriculumItems = data['curriculum'];
+        } else {
+          // Only fetch if not provided
+          await _fetchCurriculum();
+        }
+
         try {
-          var purchaseApiService = PurchaseApiService();
-          var plansData = await purchaseApiService.getSubscriptionPlans();
-
-          // Convert to model objects
-          subscriptionPlans = plansData
-              .map<SubscriptionPlan>((data) => SubscriptionPlan.fromJson(data))
-              .toList();
-
-          // Sort plans - put pro plans first
-          subscriptionPlans.sort((a, b) => b.isPro ? 1 : -1);
-
-          // Set default selection to first Pro plan if available
-          int proIndex = subscriptionPlans.indexWhere((plan) => plan.isPro);
-          if (proIndex != -1) {
-            selectedPlanIndex = proIndex;
+          var user = await Auth.data();
+          if (user != null) {
+            username = user['full_name'] ?? "User";
+            email = user['email'] ?? "";
           }
         } catch (e) {
-          NyLogger.error('Error fetching subscription plans: $e');
+          NyLogger.error('Error getting username: $e');
+        }
+
+        try {
+          subscriptionPlans = [
+            SubscriptionPlan(
+              id: 2,
+              name: "Quarterly Access",
+              amount: course!.priceThreeMonths,
+              planType: "THREE_MONTHS",
+              isPro: false,
+              features: [
+                PlanFeature(
+                    id: 5, description: "Full course access for 3 months"),
+                PlanFeature(id: 7, description: "Priority support"),
+              ],
+            ),
+            SubscriptionPlan(
+              id: 3,
+              name: "Lifetime Access",
+              amount: course!.priceLifetime,
+              planType: "LIFETIME",
+              isPro: true,
+              features: [
+                PlanFeature(
+                    id: 10,
+                    description: "Unlimited lifetime access to the course"),
+                PlanFeature(id: 12, description: "Premium support"),
+                PlanFeature(
+                    id: 15, description: "Exclusive community membership"),
+              ],
+            )
+          ];
+
+          selectedPlanIndex = 1; // Default to lifetime
+        } catch (e) {
+          NyLogger.error('Error setting up subscription plans: $e');
           showToastDanger(
               description: trans("Failed to load subscription plans"));
         } finally {
           setLoading(false, name: 'fetch_plans');
         }
       };
+
+  Future<void> _validateCurrentSubscriptionStatus() async {
+    if (course == null) return;
+
+    try {
+      Course updatedCourse =
+          await CourseApiService().getCourseWithEnrollmentDetails(course!.id);
+      if (mounted) {
+        setState(() {
+          course = updatedCourse;
+        });
+
+        if (updatedCourse.hasValidSubscription && !isRenewal) {
+          _showAlreadyValidSubscriptionDialog();
+          return;
+        }
+      }
+    } catch (e) {
+      NyLogger.error('Error validating subscription status: $e');
+    }
+  }
+
+  Future<void> _fetchCurriculum() async {
+    try {
+      final courseApiService = CourseApiService();
+      curriculumItems = await courseApiService.getCourseCurriculum(course!.id);
+      curriculumItems.sort((a, b) => a['order'].compareTo(b['order']));
+    } catch (e) {
+      NyLogger.error('Error fetching curriculum: $e');
+      curriculumItems = [];
+    }
+  }
 
   @override
   Widget view(BuildContext context) {
@@ -95,7 +177,7 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
           onPressed: () => Navigator.pop(context),
         ),
         title: Text(
-          trans("Choose a Plan"),
+          isRenewal ? trans("Renew Subscription") : trans("Choose a Plan"),
           style: TextStyle(
             color: Colors.black,
             fontSize: 16,
@@ -108,44 +190,48 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              if (isRenewal)
+                Container(
+                  width: double.infinity,
+                  margin: EdgeInsets.all(16),
+                  padding: EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.amber, width: 1),
+                  ),
+                ),
+
               // Hero Image
               Container(
                 height: 200,
                 width: double.infinity,
-                color: Color(0xFF8CD057), // Green color
-                child: Stack(
-                  children: [
-                    Positioned(
-                        right: 0,
-                        child: CachedNetworkImage(
-                          imageUrl: course?.image ?? '',
-                          height: 200,
-                          width: 200,
-                          fit: BoxFit.cover,
-                          placeholder: (context, url) => Container(
-                            height: 200,
-                            width: 200,
-                            color: Colors.grey[300],
-                            child: Center(
-                              child: CircularProgressIndicator(
-                                valueColor:
-                                    AlwaysStoppedAnimation<Color>(Colors.white),
-                              ),
-                            ),
-                          ),
-                          errorWidget: (context, url, error) => Container(
-                            height: 200,
-                            width: 200,
-                            color: Colors.grey[300],
-                            child: Icon(Icons.image_not_supported,
-                                color: Colors.white),
-                          ),
-                        )),
-                  ],
+                child: CachedNetworkImage(
+                  imageUrl: course!.image,
+                  height: 200,
+                  width: double.infinity,
+                  fit: BoxFit.cover,
+                  placeholder: (context, url) => Container(
+                    height: 200,
+                    width: double.infinity,
+                    color: Colors.grey[300],
+                    child: Center(
+                      child: CircularProgressIndicator(
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                      ),
+                    ),
+                  ),
+                  errorWidget: (context, url, error) => Container(
+                    height: 200,
+                    width: double.infinity,
+                    color: Colors.grey[300],
+                    child: Icon(Icons.image_not_supported,
+                        color: Colors.white70, size: 50),
+                  ),
                 ),
               ),
 
-              // Course Title and Description
+              // Course Info
               Padding(
                 padding: const EdgeInsets.all(16.0),
                 child: Column(
@@ -223,7 +309,6 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
                       width: 150,
                       height: 50,
                       child: ElevatedButton(
-                        // style:ButtonStyle),
                         onPressed:
                             _isProcessingPayment ? null : _startPaymentProcess,
                         child: _isProcessingPayment
@@ -241,7 +326,7 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
                                 ),
                               ),
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: Color(0xFFEFE458), // Yellow
+                          backgroundColor: Color(0xFFEFE458),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(25),
                           ),
@@ -252,7 +337,6 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
                 ),
               ),
 
-              // Bottom padding for safety
               SizedBox(height: 20),
             ],
           ),
@@ -284,11 +368,9 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Row with check circle and title/badge only
             Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                // Selection circle
                 Container(
                   width: 20,
                   height: 20,
@@ -305,7 +387,6 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
                       : SizedBox(),
                 ),
                 SizedBox(width: 12),
-                // Title and badge in the same row
                 Text(
                   plan.name,
                   style: TextStyle(
@@ -322,7 +403,7 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
                       borderRadius: BorderRadius.circular(4),
                     ),
                     child: Text(
-                      plan.isPro ? "PRO" : "",
+                      "PRO",
                       style: TextStyle(
                         color: Colors.black,
                         fontWeight: FontWeight.bold,
@@ -332,15 +413,12 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
                   ),
               ],
             ),
-
-            // Price and features aligned with title (not with check circle)
             Padding(
-              padding: const EdgeInsets.only(left: 32), // Align with title text
+              padding: const EdgeInsets.only(left: 32),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   SizedBox(height: 8),
-                  // Price
                   Text(
                     "₹${plan.amount}",
                     style: TextStyle(
@@ -349,8 +427,6 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
                     ),
                   ),
                   SizedBox(height: 12),
-
-                  // Features
                   ...plan.features.map<Widget>((PlanFeature feature) {
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 10.0),
@@ -396,18 +472,14 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
       _isProcessingPayment = true;
     });
 
-    // Get selected plan
     SubscriptionPlan plan = subscriptionPlans[selectedPlanIndex];
-    print(double.parse(plan.amount) * 100);
-    print(getEnv('RAZORPAY_KEY_ID'));
+    NyLogger.debug('Amount in paise: ${double.parse(plan.amount) * 100}');
+    NyLogger.debug('Razorpay Key: ${getEnv('RAZORPAY_KEY_ID')}');
 
-    // Get user info
     _getUserInfo().then((userInfo) {
-      // Create Razorpay options
       var options = {
-        'key': "rzp_test_jVs3DvUw9Q14gj",
-        'amount': (double.parse(plan.amount) * 100)
-            .toString(), // Razorpay expects amount in paise
+        'key': getEnv('RAZORPAY_KEY_ID'),
+        'amount': (double.parse(plan.amount) * 100).toString(),
         'name': 'Course Enrollment',
         'description': 'Enrollment for ${course!.title}',
         'prefill': {
@@ -417,10 +489,10 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
         },
         'notes': {
           'course_id': course!.id.toString(),
-          'plan_id': plan.id.toString(),
+          'plan_type': plan.planType,
         },
         'theme': {
-          'color': '#EFE458', // Yellow color
+          'color': '#EFE458',
         }
       };
 
@@ -441,11 +513,9 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
     });
   }
 
-  // Get user info for Razorpay prefill
   Future<Map<String, dynamic>> _getUserInfo() async {
     try {
       final userData = await Auth.data();
-
       return {
         'name': userData['full_name'] ?? '',
         'email': userData['email'] ?? '',
@@ -456,43 +526,181 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
     }
   }
 
+  String generateUniqueId() {
+    var uuid = Uuid();
+    return uuid.v1();
+  }
+
+  void _showAlreadyValidSubscriptionDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Text(trans("Active Subscription Found")),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(trans(
+                  "You already have an active subscription to this course.")),
+              SizedBox(height: 8),
+              Text(
+                trans("Plan: ${course!.subscriptionPlanName}"),
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              if (!course!.isLifetimeSubscription &&
+                  course!.subscriptionExpiryDate != null)
+                Text(
+                  trans(
+                      "Expires: ${course!.subscriptionExpiryDate!.day}/${course!.subscriptionExpiryDate!.month}/${course!.subscriptionExpiryDate!.year}"),
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                ),
+              if (course!.isLifetimeSubscription)
+                Text(
+                  trans("Lifetime Access"),
+                  style: TextStyle(fontSize: 12, color: Colors.green[600]),
+                ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              child: Text(trans("Go Back")),
+              onPressed: () {
+                Navigator.pop(context);
+                pop(); // Close enrollment page
+              },
+            ),
+            TextButton(
+              child: Text(trans("View Course")),
+              style: TextButton.styleFrom(foregroundColor: Colors.amber),
+              onPressed: () {
+                Navigator.pop(context);
+                routeTo(CourseCurriculumPage.path, data: {
+                  'course': course!,
+                  'curriculum': curriculumItems,
+                });
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   void _handlePaymentSuccess(PaymentSuccessResponse response) async {
-    print(response);
-    // Get payment details from Razorpay response
+    NyLogger.debug('Payment Success Response: $response');
 
     String paymentId = response.paymentId ?? '';
-    String orderId = response.orderId ?? '';
-    String signature = response.signature ?? "";
-    print(paymentId);
-    print(orderId);
-    print(signature);
+    String orderId = response.orderId ?? (await generateUniqueId());
+    String signature = response.signature ?? (await generateUniqueId());
 
     try {
-      // Show processing dialog
       showLoadingDialog(trans("Processing enrollment..."));
 
-      // Get selected plan
       SubscriptionPlan plan = subscriptionPlans[selectedPlanIndex];
-
-      // Create enrollment with the payment reference code
       var courseApiService = CourseApiService();
+
       await courseApiService.purchaseCourse(
-          courseId: course!.id,
-          planId: plan.id,
-          razorpayPaymentId: paymentId,
-          razorpayOrderId: orderId,
-          razorpaySignature: signature);
+        courseId: course!.id,
+        planType: plan.planType,
+        razorpayPaymentId: paymentId,
+        razorpayOrderId: orderId,
+        razorpaySignature: signature,
+      );
 
       // Hide processing dialog
       if (mounted && Navigator.canPop(context)) {
         Navigator.pop(context);
       }
 
+      await courseApiService.invalidateEnrollmentCaches();
+
+// Get updated course with fresh enrollment details
+      Course updatedCourse;
+      try {
+        updatedCourse =
+            await courseApiService.getCourseWithEnrollmentDetails(course!.id);
+      } catch (e) {
+        // Fallback: create updated course manually
+        updatedCourse = Course(
+          id: course!.id,
+          title: course!.title,
+          image: course!.image,
+          description: course!.description,
+          smallDesc: course!.smallDesc,
+          category: course!.category,
+          categoryName: course!.categoryName,
+          location: course!.location,
+          priceOneMonth: course!.priceOneMonth,
+          priceThreeMonths: course!.priceThreeMonths,
+          priceLifetime: course!.priceLifetime,
+          isFeatured: course!.isFeatured,
+          dateUploaded: course!.dateUploaded,
+          enrolledStudents: course!.enrolledStudents,
+          isEnrolled: true, // This is the key change
+          isWishlisted: course!.isWishlisted,
+          objectives: course!.objectives,
+          requirements: course!.requirements,
+          curriculum: course!.curriculum,
+        );
+      }
+
       // Notify other screens about the enrollment
       updateState('/search_tab', data: "refresh_courses");
       updateState('/home_tab', data: "refresh_enrollments");
 
-      // Show success dialog
+      // Start automatic background download
+      Future.microtask(() async {
+        try {
+          if (curriculumItems.isNotEmpty && username != null && email != null) {
+            bool downloadStarted = await _videoService.downloadAllVideos(
+              courseId: course!.id.toString(),
+              course: course!,
+              curriculum: curriculumItems,
+              watermarkText: username!,
+              email: email!,
+            );
+
+            if (downloadStarted && mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(trans(
+                      "Videos are queued for download. You can continue using the app while downloads complete in the background.")),
+                  backgroundColor: Colors.green,
+                  duration: const Duration(seconds: 4),
+                ),
+              );
+            }
+          }
+        } catch (e) {
+          NyLogger.error('Error starting background download: $e');
+        }
+      });
+
+      // Create updated course with enrollment status
+      updatedCourse = Course(
+        id: course!.id,
+        title: course!.title,
+        image: course!.image,
+        description: course!.description,
+        smallDesc: course!.smallDesc,
+        category: course!.category,
+        categoryName: course!.categoryName,
+        location: course!.location,
+        priceOneMonth: course!.priceOneMonth,
+        priceThreeMonths: course!.priceThreeMonths,
+        priceLifetime: course!.priceLifetime,
+        isFeatured: course!.isFeatured,
+        dateUploaded: course!.dateUploaded,
+        enrolledStudents: course!.enrolledStudents,
+        isEnrolled: true, // This is the key change
+        isWishlisted: course!.isWishlisted,
+        objectives: course!.objectives,
+        requirements: course!.requirements,
+        curriculum: course!.curriculum,
+      );
+
+      // Show success dialog with navigation back to CourseDetailPage
       await showDialog(
         context: context,
         barrierDismissible: false,
@@ -518,15 +726,32 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
                   "Transaction ID: ${paymentId}",
                   style: TextStyle(fontSize: 12, color: Colors.grey[600]),
                 ),
+                SizedBox(height: 8),
+                Text(
+                  "Your videos are being prepared for offline viewing.",
+                  style: TextStyle(fontSize: 12, color: Colors.blue[600]),
+                ),
               ],
             ),
             actions: [
               TextButton(
-                child: Text("View Course"),
+                child: Text("View Course Details"),
                 onPressed: () {
-                  // Navigate to home tab with index 3
-                  Navigator.of(context).popUntil((route) => route.isFirst);
-                  updateState('/app_layout', data: {"index": 3});
+                  Navigator.pop(context); // Close dialog
+
+                  // Navigate back to CourseDetailPage with updated course data
+
+                  routeTo(BaseNavigationHub.path,
+                      tabIndex: 1,
+                      navigationType: NavigationType.pushAndRemoveUntil,
+                      removeUntilPredicate: (route) => true);
+
+                  // Force refresh the current CourseDetailPage with updated course
+                  updateState('/course-detail', data: {
+                    'refresh': true,
+                    'course': updatedCourse, // Pass the updated course
+                    'curriculum': curriculumItems,
+                  });
                 },
               ),
             ],
@@ -534,12 +759,10 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
         },
       );
     } catch (e) {
-      // Hide processing dialog if showing
       if (mounted && Navigator.canPop(context)) {
         Navigator.pop(context);
       }
 
-      // Show error message
       showToastDanger(description: "Enrollment failed: ${e.toString()}");
     } finally {
       setState(() {
@@ -548,12 +771,40 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
     }
   }
 
-  void _handlePaymentError(PaymentFailureResponse response) {
-    setState(() {
-      _isProcessingPayment = false;
-    });
+  void _clearPaymentData() {
+    // Clear any cached payment information
+    // Reset form state if needed
+  }
+  void _showPaymentErrorDialog(PaymentFailureResponse response) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text("Payment Failed"),
+        content: Text(
+            "Please try again or contact support if the problem persists."),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text("OK"),
+          ),
+        ],
+      ),
+    );
+  }
 
-    // Show error message
+  void _handlePaymentError(PaymentFailureResponse response) {
+    if (mounted) {
+      setState(() {
+        _isProcessingPayment = false;
+      });
+
+      // Clear any sensitive payment data
+      _clearPaymentData();
+
+      // Show user-friendly error message
+      _showPaymentErrorDialog(response);
+    }
+
     showToastDanger(
         description: "Payment failed: ${response.message ?? 'Unknown error'}");
   }
@@ -563,12 +814,10 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
       _isProcessingPayment = false;
     });
 
-    // Show info message
     showToastInfo(
         description: "External wallet selected: ${response.walletName ?? ''}");
   }
 
-  // Helper to show loading dialog
   void showLoadingDialog(String message) {
     showDialog(
       context: context,

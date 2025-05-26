@@ -1,0 +1,98 @@
+{
+  "project_info": {
+    "project_number": "1044597569034",
+    "project_id": "bhavani-28623",
+    "storage_bucket": "bhavani-28623.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1044597569034:android:cacbfd80ef8e0c66a4d1f3",
+        "android_client_info": {
+          "package_name": "com.bhavani.com"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1044597569034-qupb7ojndq6kqetgb4jgqup0c0n4b8gk.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.bhavani.com",
+            "certificate_hash": "91e1fa7e630017756990251330de6e683625f00e"
+          }
+        },
+        {
+          "client_id": "1044597569034-vfvcf7oens8r1eicjuje1feucu5pummk.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.bhavani.com",
+            "certificate_hash": "b01a74a55d02f410823ae138b3f91027e47c4ef9"
+          }
+        },
+        {
+          "client_id": "1044597569034-lm3hngslgaurka0f95iho2u98ip0l27a.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB8dKLuOk0el2wxrVMQqRMBD0ejvQXR8Ro"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1044597569034-lm3hngslgaurka0f95iho2u98ip0l27a.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "1044597569034-gl04ivslqhe736c375rdcmsu3ep7r84s.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.bhavani.com"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1044597569034:android:63ba084701e9de16a4d1f3",
+        "android_client_info": {
+          "package_name": "com.bybhavani.com"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1044597569034-lm3hngslgaurka0f95iho2u98ip0l27a.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB8dKLuOk0el2wxrVMQqRMBD0ejvQXR8Ro"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1044597569034-lm3hngslgaurka0f95iho2u98ip0l27a.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "1044597569034-gl04ivslqhe736c375rdcmsu3ep7r84s.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.bhavani.com"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

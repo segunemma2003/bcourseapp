@@ -5,7 +5,6 @@ import 'package:nylo_framework/nylo_framework.dart';
 import 'package:video_player/video_player.dart' as vp;
 import 'package:chewie/chewie.dart';
 import 'dart:async';
-import 'dart:io' show Platform;
 
 class VideoPlayerPage extends NyStatefulWidget {
   static RouteView path = ("/video-player", (_) => VideoPlayerPage());

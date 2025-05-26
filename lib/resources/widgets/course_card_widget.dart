@@ -14,57 +14,69 @@ class CourseCard extends StatelessWidget {
       onTap: () {
         routeTo(CourseDetailPage.path, data: {'course': course});
       },
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: Image.network(
-                course.image,
-                fit: BoxFit.cover,
-                errorBuilder: (context, error, stackTrace) {
-                  return Image.asset(
-                    'assets/images/profile_image.png',
-                    fit: BoxFit.cover,
-                  ).localAsset();
-                },
-                loadingBuilder: (context, child, loadingProgress) {
-                  if (loadingProgress == null) return child;
-                  return Center(child: CircularProgressIndicator());
-                },
+      child: Container(
+        width: 200, // Set a fixed width for the card
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              height: 120, // Set a fixed height for the image container
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.network(
+                  course.image,
+                  width: double
+                      .infinity, // Make image take full width of container
+                  height: 120,
+                  fit: BoxFit.cover,
+                  errorBuilder: (context, error, stackTrace) {
+                    return Image.asset(
+                      'assets/images/profile_image.png',
+                      fit: BoxFit.cover,
+                      width: double.infinity,
+                      height: 120,
+                    ).localAsset();
+                  },
+                  loadingBuilder: (context, child, loadingProgress) {
+                    if (loadingProgress == null) return child;
+                    return Center(child: CircularProgressIndicator());
+                  },
+                ),
               ),
             ),
-          ),
-          SizedBox(height: 8),
-          Text(
-            course.title,
-            style: TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 9,
+            SizedBox(height: 8),
+            Text(
+              course.title,
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 12, // Increased font size for better readability
+              ),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
             ),
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-          ),
-          SizedBox(height: 4),
-          Text(
-            course.smallDesc,
-            style: TextStyle(
-              color: Colors.grey[600],
-              fontSize: 8,
+            SizedBox(height: 4),
+            Text(
+              course.smallDesc,
+              style: TextStyle(
+                color: Colors.grey[600],
+                fontSize: 10, // Increased font size
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          SizedBox(height: 4),
-          Text(
-            course.categoryName,
-            style: TextStyle(
-              color: Colors.grey[600],
-              fontSize: 9,
+            SizedBox(height: 4),
+            Text(
+              course.categoryName,
+              style: TextStyle(
+                color: Colors.grey[600],
+                fontSize: 10, // Increased font size
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

@@ -10,6 +10,9 @@ class Course extends Model {
   final String categoryName;
   final bool isFeatured;
   final String dateUploaded;
+  final String priceOneMonth;
+  final String priceThreeMonths;
+  final String priceLifetime;
   final String location;
   final int enrolledStudents;
   final bool isEnrolled;
@@ -17,6 +20,10 @@ class Course extends Model {
   final List<CourseObjective> objectives;
   final List<CourseRequirement> requirements;
   final List<CourseCurriculum> curriculum;
+
+  // ✅ New enrollment status fields
+  final UserEnrollment? userEnrollment;
+  final EnrollmentStatus? enrollmentStatus;
 
   static String storageKey = "course";
 
@@ -29,6 +36,9 @@ class Course extends Model {
     required this.category,
     required this.categoryName,
     required this.location,
+    this.priceOneMonth = '999',
+    this.priceThreeMonths = '2499',
+    this.priceLifetime = '4999',
     this.isFeatured = false,
     this.dateUploaded = '',
     this.enrolledStudents = 0,
@@ -37,6 +47,8 @@ class Course extends Model {
     this.objectives = const [],
     this.requirements = const [],
     this.curriculum = const [],
+    this.userEnrollment,
+    this.enrollmentStatus,
   }) : super(key: storageKey);
 
   Course.fromJson(dynamic data)
@@ -47,15 +59,16 @@ class Course extends Model {
         description = data['description'] ?? '',
         category = data['category'] ?? 0,
         categoryName = data['category_name'] ?? '',
-        isFeatured = data['is_featured'] ?? false,
+        priceOneMonth = data['price_one_month'] ?? '999',
+        priceThreeMonths = data['price_three_months'] ?? '2499',
+        priceLifetime = data['price_lifetime'] ?? '4999',
         dateUploaded = data['date_uploaded'] ?? '',
         location = data['location'] ?? '',
         enrolledStudents =
             int.tryParse(data['enrolled_students']?.toString() ?? '0') ?? 0,
-        isEnrolled =
-            data['is_enrolled'] == 'true' || data['is_enrolled'] == true,
-        isWishlisted =
-            data['is_wishlisted'] == 'true' || data['is_wishlisted'] == true,
+        isEnrolled = _parseBool(data['is_enrolled']),
+        isWishlisted = _parseBool(data['is_wishlisted']),
+        isFeatured = _parseBool(data['is_featured']),
         objectives = (data['objectives'] ?? [])
             .map<CourseObjective>((obj) => CourseObjective.fromJson(obj))
             .toList(),
@@ -65,6 +78,13 @@ class Course extends Model {
         curriculum = (data['curriculum'] ?? [])
             .map<CourseCurriculum>((cur) => CourseCurriculum.fromJson(cur))
             .toList(),
+        // ✅ Parse enrollment status information
+        userEnrollment = data['user_enrollment'] != null
+            ? UserEnrollment.fromJson(data['user_enrollment'])
+            : null,
+        enrollmentStatus = data['enrollment_status'] != null
+            ? EnrollmentStatus.fromJson(data['enrollment_status'])
+            : null,
         super(key: storageKey);
 
   @override
@@ -74,8 +94,12 @@ class Course extends Model {
       'title': title,
       'image': image,
       'small_desc': smallDesc,
+      'description': description,
       'category': category,
       'category_name': categoryName,
+      'price_one_month': priceOneMonth,
+      'price_three_months': priceThreeMonths,
+      'price_lifetime': priceLifetime,
       'is_featured': isFeatured,
       'date_uploaded': dateUploaded,
       'location': location,
@@ -85,8 +109,226 @@ class Course extends Model {
       'objectives': objectives.map((obj) => obj.toJson()).toList(),
       'requirements': requirements.map((req) => req.toJson()).toList(),
       'curriculum': curriculum.map((cur) => cur.toJson()).toList(),
+      // ✅ Include enrollment status in serialization
+      'user_enrollment': userEnrollment?.toJson(),
+      'enrollment_status': enrollmentStatus?.toJson(),
     };
   }
+
+  static bool _parseBool(dynamic value) {
+    if (value is bool) return value;
+    if (value is String) return value.toLowerCase() == 'true';
+    if (value is int) return value == 1;
+    return false;
+  }
+
+  // ✅ Helper methods for subscription validation
+  bool get hasValidSubscription {
+    if (!isEnrolled) return false;
+
+    // Check enrollment status first
+    if (enrollmentStatus != null) {
+      return enrollmentStatus!.status == 'active' &&
+          !enrollmentStatus!.isExpired;
+    }
+
+    // Fallback to user enrollment
+    if (userEnrollment != null) {
+      return userEnrollment!.isActive && !userEnrollment!.isExpired;
+    }
+
+    // If enrolled but no detailed status, assume valid
+    return isEnrolled;
+  }
+
+  bool get isLifetimeSubscription {
+    if (enrollmentStatus != null) {
+      return enrollmentStatus!.isLifetime;
+    }
+
+    if (userEnrollment != null) {
+      return userEnrollment!.planType == 'LIFETIME';
+    }
+
+    return false;
+  }
+
+  DateTime? get subscriptionExpiryDate {
+    if (enrollmentStatus != null) {
+      return enrollmentStatus!.expiresOn;
+    }
+
+    if (userEnrollment != null) {
+      return userEnrollment!.expiryDate;
+    }
+
+    return null;
+  }
+
+  String get subscriptionPlanName {
+    if (enrollmentStatus != null) {
+      return enrollmentStatus!.planName;
+    }
+
+    if (userEnrollment != null) {
+      return userEnrollment!.planName;
+    }
+
+    return 'Unknown';
+  }
+
+  String get subscriptionStatus {
+    if (enrollmentStatus != null) {
+      return enrollmentStatus!.status;
+    }
+
+    if (userEnrollment != null) {
+      return userEnrollment!.isActive ? 'active' : 'inactive';
+    }
+
+    return isEnrolled ? 'enrolled' : 'not_enrolled';
+  }
+
+  // ✅ Copy with method for creating updated instances
+  Course copyWith({
+    int? id,
+    String? title,
+    String? image,
+    String? description,
+    String? smallDesc,
+    int? category,
+    String? categoryName,
+    String? location,
+    String? priceOneMonth,
+    String? priceThreeMonths,
+    String? priceLifetime,
+    bool? isFeatured,
+    String? dateUploaded,
+    int? enrolledStudents,
+    bool? isEnrolled,
+    bool? isWishlisted,
+    List<CourseObjective>? objectives,
+    List<CourseRequirement>? requirements,
+    List<CourseCurriculum>? curriculum,
+    UserEnrollment? userEnrollment,
+    EnrollmentStatus? enrollmentStatus,
+  }) {
+    return Course(
+      id: id ?? this.id,
+      title: title ?? this.title,
+      image: image ?? this.image,
+      description: description ?? this.description,
+      smallDesc: smallDesc ?? this.smallDesc,
+      category: category ?? this.category,
+      categoryName: categoryName ?? this.categoryName,
+      location: location ?? this.location,
+      priceOneMonth: priceOneMonth ?? this.priceOneMonth,
+      priceThreeMonths: priceThreeMonths ?? this.priceThreeMonths,
+      priceLifetime: priceLifetime ?? this.priceLifetime,
+      isFeatured: isFeatured ?? this.isFeatured,
+      dateUploaded: dateUploaded ?? this.dateUploaded,
+      enrolledStudents: enrolledStudents ?? this.enrolledStudents,
+      isEnrolled: isEnrolled ?? this.isEnrolled,
+      isWishlisted: isWishlisted ?? this.isWishlisted,
+      objectives: objectives ?? this.objectives,
+      requirements: requirements ?? this.requirements,
+      curriculum: curriculum ?? this.curriculum,
+      userEnrollment: userEnrollment ?? this.userEnrollment,
+      enrollmentStatus: enrollmentStatus ?? this.enrollmentStatus,
+    );
+  }
+}
+
+// ✅ New UserEnrollment class
+class UserEnrollment extends Model {
+  final int id;
+  final String planType;
+  final String planName;
+  final DateTime? expiryDate;
+  final bool isActive;
+  final bool isExpired;
+
+  static String storageKey = "user_enrollment";
+
+  UserEnrollment({
+    required this.id,
+    required this.planType,
+    required this.planName,
+    this.expiryDate,
+    required this.isActive,
+    required this.isExpired,
+  }) : super(key: storageKey);
+
+  UserEnrollment.fromJson(dynamic data)
+      : id = data['id'] ?? 0,
+        planType = data['plan_type'] ?? '',
+        planName = data['plan_name'] ?? '',
+        expiryDate = data['expiry_date'] != null
+            ? DateTime.tryParse(data['expiry_date'].toString())
+            : null,
+        isActive = data['is_active'] == true || data['is_active'] == 'true',
+        isExpired = data['is_expired'] == true || data['is_expired'] == 'true',
+        super(key: storageKey);
+
+  @override
+  toJson() {
+    return {
+      'id': id,
+      'plan_type': planType,
+      'plan_name': planName,
+      'expiry_date': expiryDate?.toIso8601String(),
+      'is_active': isActive,
+      'is_expired': isExpired,
+    };
+  }
+}
+
+// ✅ New EnrollmentStatus class
+class EnrollmentStatus extends Model {
+  final String status;
+  final String message;
+  final String planType;
+  final String planName;
+  final DateTime? expiresOn;
+  final bool isLifetime;
+
+  static String storageKey = "enrollment_status";
+
+  EnrollmentStatus({
+    required this.status,
+    required this.message,
+    required this.planType,
+    required this.planName,
+    this.expiresOn,
+    required this.isLifetime,
+  }) : super(key: storageKey);
+
+  EnrollmentStatus.fromJson(dynamic data)
+      : status = data['status'] ?? '',
+        message = data['message'] ?? '',
+        planType = data['plan_type'] ?? '',
+        planName = data['plan_name'] ?? '',
+        expiresOn = data['expires_on'] != null
+            ? DateTime.tryParse(data['expires_on'].toString())
+            : null,
+        isLifetime =
+            data['is_lifetime'] == true || data['is_lifetime'] == 'true',
+        super(key: storageKey);
+
+  @override
+  toJson() {
+    return {
+      'status': status,
+      'message': message,
+      'plan_type': planType,
+      'plan_name': planName,
+      'expires_on': expiresOn?.toIso8601String(),
+      'is_lifetime': isLifetime,
+    };
+  }
+
+  bool get isExpired => status != 'active';
+  bool get isActive => status == 'active';
 }
 
 class CourseObjective extends Model {
@@ -144,6 +386,7 @@ class CourseCurriculum extends Model {
   final String title;
   final String videoUrl;
   final int order;
+  final String? duration; // ✅ Added duration field
 
   static String storageKey = "course_curriculum";
 
@@ -152,6 +395,7 @@ class CourseCurriculum extends Model {
     required this.title,
     required this.videoUrl,
     this.order = 0,
+    this.duration,
   }) : super(key: storageKey);
 
   CourseCurriculum.fromJson(dynamic data)
@@ -159,6 +403,7 @@ class CourseCurriculum extends Model {
         title = data['title'] ?? '',
         videoUrl = data['video_url'] ?? '',
         order = data['order'] ?? 0,
+        duration = data['duration']?.toString(),
         super(key: storageKey);
 
   @override
@@ -168,6 +413,7 @@ class CourseCurriculum extends Model {
       'title': title,
       'video_url': videoUrl,
       'order': order,
+      'duration': duration,
     };
   }
 }
