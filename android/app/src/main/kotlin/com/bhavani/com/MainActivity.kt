@@ -1,4 +1,4 @@
-package com.bybhavani.com
+package com.bhavani.com
 
 import android.content.ContentResolver
 import android.content.Context

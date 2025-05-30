@@ -5,15 +5,14 @@ import 'package:flutter_app/resources/pages/signin_page.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 
 import '../../app/models/course.dart';
-import '../../app/models/wishlist.dart'; // Import Wishlist model
+import '../../app/models/wishlist.dart';
 import '../../utils/course_data.dart';
 import '../../app/networking/course_api_service.dart';
-import '../pages/enrollment_plan_page.dart'; // Import for EnrollmentPlanPage.path
+import '../pages/enrollment_plan_page.dart';
 
 class SearchTab extends StatefulWidget {
   const SearchTab({super.key});
 
-  // Define state name for state management
   static String state = '/search_tab';
 
   @override
@@ -25,14 +24,13 @@ class _SearchTabState extends NyState<SearchTab> {
 
   List<Course> _allCourses = [];
   List<Course> _filteredCourses = [];
-  List<Course> _enrolledCourses = [];
+  // ✅ Removed _enrolledCourses list since we'll use Course.isEnrolled
 
-  List<Wishlist> _wishlistItems = []; // Add direct list of Wishlist items
+  List<Wishlist> _wishlistItems = [];
   Map<String, dynamic>? _userData;
   String _searchQuery = '';
   bool _isAuthenticated = false;
 
-  // Set the state name for Nylo's state management
   _SearchTabState() {
     stateName = SearchTab.state;
   }
@@ -46,17 +44,14 @@ class _SearchTabState extends NyState<SearchTab> {
   get init => () async {
         super.init();
 
-        // Check authentication status
         _isAuthenticated = await Auth.isAuthenticated();
         if (_isAuthenticated) {
           _userData = await Auth.data();
         }
 
-        // Initialize data
         await _fetchCourses();
-        await _fetchEnrolledCourses();
+        // ✅ Removed _fetchEnrolledCourses() call since enrollment status comes with courses
 
-        // Listen for text changes
         _searchController.addListener(() {
           if (_searchController.text != _searchQuery) {
             _performSearch(_searchController.text);
@@ -64,76 +59,8 @@ class _SearchTabState extends NyState<SearchTab> {
         });
       };
 
-  Future<void> _fetchEnrolledCourses() async {
-    setLoading(true, name: 'fetch_enrolled_courses');
+  // ✅ Removed _fetchEnrolledCourses method entirely
 
-    try {
-      // If not authenticated, we can't fetch enrolled courses
-      if (!_isAuthenticated) {
-        setState(() {
-          _enrolledCourses = [];
-        });
-        return;
-      }
-
-      // Use the CourseApiService to fetch enrolled courses
-      var courseApiService = CourseApiService();
-
-      try {
-        // Fetch enrolled courses from API
-        List<dynamic> enrolledCoursesData =
-            await courseApiService.getEnrolledCourses();
-
-        // Process the courses
-        if (enrolledCoursesData.isNotEmpty) {
-          _enrolledCourses = enrolledCoursesData
-              .map((data) => Course.fromJson(data['course']))
-              .toList();
-        } else {
-          _enrolledCourses = [];
-        }
-      } catch (e) {
-        // If API fails, check local storage as fallback
-        NyLogger.error('API Error: $e. Checking local storage...');
-
-        List<String>? enrolledCourseIds =
-            await NyStorage.read('enrolled_course_ids');
-
-        if (enrolledCourseIds != null && enrolledCourseIds.isNotEmpty) {
-          // Fetch all courses to find the enrolled ones
-          List<dynamic> allCoursesData = await courseApiService.getAllCourses();
-          List<Course> allCourses =
-              allCoursesData.map((data) => Course.fromJson(data)).toList();
-
-          // Filter to get only enrolled courses
-          _enrolledCourses = allCourses
-              .where((course) => enrolledCourseIds.contains(course.id))
-              .toList();
-        } else {
-          _enrolledCourses = [];
-        }
-      }
-
-      // Load progress data for courses
-    } catch (e) {
-      NyLogger.error('Failed to fetch enrolled courses: $e');
-
-      showToast(
-          title: trans("Error"),
-          description: trans("Failed to load your courses"),
-          icon: Icons.error_outline,
-          style: ToastNotificationStyleType.danger);
-
-      // Reset state on error
-      setState(() {
-        _enrolledCourses = [];
-      });
-    } finally {
-      setLoading(false, name: 'fetch_enrolled_courses');
-    }
-  }
-
-  // Define state actions that can be called from other widgets
   @override
   get stateActions => {
         "refresh_courses": () async {
@@ -148,59 +75,66 @@ class _SearchTabState extends NyState<SearchTab> {
             await _fetchUserSpecificData();
           }
         },
-        // Add action to update wishlist status from wishlist tab
-        "update_wishlist_status": (Map<String, dynamic> data) async {
-          if (data.containsKey('course_id') &&
-              data.containsKey('is_in_wishlist')) {
-            String courseId = data['course_id'];
-            bool isInWishlist = data['is_in_wishlist'];
+        "course_enrolled": (Map<String, dynamic> data) async {
+          if (data.containsKey('updatedCourse') &&
+              data.containsKey('courseId')) {
+            try {
+              Course updatedCourse = Course.fromJson(data['updatedCourse']);
+              String courseId = data['courseId'].toString();
 
-            if (!isInWishlist) {
-              // Remove course from wishlist courses
+              // Find and update the course in our lists
               setState(() {
-                _wishlistItems.removeWhere((c) => c.courseId == courseId);
+                // Update in _allCourses
+                int allCoursesIndex =
+                    _allCourses.indexWhere((c) => c.id.toString() == courseId);
+                if (allCoursesIndex >= 0) {
+                  _allCourses[allCoursesIndex] = updatedCourse;
+                }
+
+                // Update in _filteredCourses
+                int filteredIndex = _filteredCourses
+                    .indexWhere((c) => c.id.toString() == courseId);
+                if (filteredIndex >= 0) {
+                  _filteredCourses[filteredIndex] = updatedCourse;
+                }
               });
+
+              NyLogger.info(
+                  'Updated course enrollment status in SearchTab for course $courseId');
+            } catch (e) {
+              NyLogger.error('Error updating course enrollment status: $e');
+              // Fallback: refresh all courses
+              await _fetchCourses(refresh: true);
             }
           }
         },
       };
 
   Future<void> _fetchCourses({bool refresh = false}) async {
-    // Use Nylo's loading state management with skeletonizer
     setLoading(true, name: 'fetch_courses');
 
     try {
-      // Use the CourseApiService instead of local data
       var courseApiService = CourseApiService();
-
-      // Fetch both featured and all courses in parallel for faster loading
       List<dynamic> coursesData = [];
 
       try {
-        // First attempt to get courses from API
         coursesData = await courseApiService.getAllCourses(refresh: refresh);
       } catch (e) {
-        // Fallback to featured courses if getAllCourses fails
         coursesData = await courseApiService.getAllCourses(refresh: refresh);
       }
 
+      // ✅ Courses now come with isEnrolled field already populated
       _allCourses = coursesData.map((data) => Course.fromJson(data)).toList();
-
-      // Always show all courses initially
       _filteredCourses = List.from(_allCourses);
 
-      // If user is authenticated, fetch user-specific data
       if (_isAuthenticated) {
-        await _fetchUserSpecificData();
+        // ✅ Only fetch wishlist data since enrollment status comes with courses
+        await _fetchWishlistData();
       }
     } catch (e) {
       NyLogger.error('Error fetching courses: $e');
-
-      // Fallback to local data if API fails
-
       _filteredCourses = [];
 
-      // Show error using Nylo toast
       showToast(
           title: trans("Error"),
           description:
@@ -208,52 +142,39 @@ class _SearchTabState extends NyState<SearchTab> {
           icon: Icons.error_outline,
           style: ToastNotificationStyleType.warning);
     } finally {
-      // Complete loading
       setLoading(false, name: 'fetch_courses');
     }
   }
 
-  Future<void> _fetchUserSpecificData() async {
+  // ✅ Simplified method to only fetch wishlist data
+  Future<void> _fetchWishlistData() async {
     if (!_isAuthenticated) return;
 
-    setLoading(true, name: 'fetch_user_data');
+    setLoading(true, name: 'fetch_wishlist');
 
     try {
       var courseApiService = CourseApiService();
+      List<dynamic> wishlistData = await courseApiService.getWishlist();
 
-      // Parallel fetch for better performance
-      var results = await Future.wait([
-        courseApiService.getEnrolledCourses(),
-        courseApiService.getWishlist()
-      ]);
-
-      // Process enrolled courses
-      List<dynamic> enrolledCoursesData = results[0];
-      _enrolledCourses = enrolledCoursesData
-          .map((data) => Course.fromJson(data['course']))
-          .toList();
-
-      // Process wishlist data - store both Course objects and Wishlist objects
-      List<dynamic> wishlistData = results[1];
-
-      // Store Wishlist items directly
       _wishlistItems =
           wishlistData.map((data) => Wishlist.fromJson(data)).toList();
 
-      // Also keep the course objects for display
-
       NyLogger.debug('Loaded ${_wishlistItems.length} wishlist items');
     } catch (e) {
-      NyLogger.error('Error fetching user data: $e');
+      NyLogger.error('Error fetching wishlist data: $e');
 
-      // Only show toast if it's not a "not logged in" error
       if (e.toString() != "Exception: Not logged in") {
         showToastWarning(
             description: trans("Could not fetch your saved courses"));
       }
     } finally {
-      setLoading(false, name: 'fetch_user_data');
+      setLoading(false, name: 'fetch_wishlist');
     }
+  }
+
+  // ✅ Renamed from _fetchUserSpecificData for clarity
+  Future<void> _fetchUserSpecificData() async {
+    await _fetchWishlistData();
   }
 
   void _performSearch(String query) {
@@ -261,12 +182,10 @@ class _SearchTabState extends NyState<SearchTab> {
       _searchQuery = query;
 
       if (query.isEmpty) {
-        // Show all courses when search is cleared
         _filteredCourses = List.from(_allCourses);
         return;
       }
 
-      // Apply the search filter
       String lowercaseQuery = query.toLowerCase();
       _filteredCourses = _allCourses.where((course) {
         return course.title.toLowerCase().contains(lowercaseQuery) ||
@@ -283,7 +202,6 @@ class _SearchTabState extends NyState<SearchTab> {
 
   Future<void> _toggleWishlist(Course course) async {
     if (!_isAuthenticated) {
-      // If not authenticated, ask the user to login
       confirmAction(() {
         routeTo(SigninPage.path);
       },
@@ -293,7 +211,6 @@ class _SearchTabState extends NyState<SearchTab> {
       return;
     }
 
-    // Check if course is in wishlist
     bool isInWishlist = _wishlistItems.any((c) => c.courseId == course.id);
 
     try {
@@ -301,13 +218,11 @@ class _SearchTabState extends NyState<SearchTab> {
         var courseApiService = CourseApiService();
 
         if (isInWishlist) {
-          // Find wishlist item id from the _wishlistItems list
           Wishlist? wishlistItem;
           try {
             wishlistItem =
                 _wishlistItems.firstWhere((item) => item.courseId == course.id);
           } catch (e) {
-            // No matching item found
             wishlistItem = null;
           }
 
@@ -315,19 +230,15 @@ class _SearchTabState extends NyState<SearchTab> {
             await courseApiService.removeFromWishlist(wishlistItem.id);
             showToastInfo(description: trans("Course removed from wishlist"));
 
-            // Remove from both lists
             setState(() {
               _wishlistItems.removeWhere((item) => item.courseId == course.id);
             });
 
-            // Notify wishlist tab about the change
             updateState('/wishlist_tab', data: "refresh_wishlist");
           }
         } else {
-          // Add to wishlist - Parse course.id to int
           var response = await courseApiService.addToWishlist(course.id);
 
-          // Create Wishlist object from response and add to list
           if (response != null) {
             Wishlist newWishlistItem = Wishlist.fromJson(response);
 
@@ -337,8 +248,6 @@ class _SearchTabState extends NyState<SearchTab> {
           }
 
           showToastSuccess(description: trans("Course added to wishlist"));
-
-          // Notify wishlist tab about the change
           updateState('/wishlist_tab', data: "refresh_wishlist");
         }
       });
@@ -350,7 +259,6 @@ class _SearchTabState extends NyState<SearchTab> {
 
   Future<void> _enrollInCourse(Course course) async {
     if (!_isAuthenticated) {
-      // If not authenticated, ask the user to login
       confirmAction(() {
         routeTo(SigninPage.path);
       },
@@ -360,15 +268,12 @@ class _SearchTabState extends NyState<SearchTab> {
       return;
     }
 
-    // Check if already enrolled
-    bool isEnrolled = _enrolledCourses.any((c) => c.id == course.id);
-
-    if (isEnrolled) {
+    // ✅ Use course.isEnrolled instead of checking _enrolledCourses list
+    if (course.isEnrolled) {
       routeTo(PurchasedCourseDetailPage.path, data: {'course': course});
       return;
     }
 
-    // Navigate directly to enrollment plan page instead of confirming
     routeTo(CourseDetailPage.path, data: {
       'course': course,
     });
@@ -387,10 +292,7 @@ class _SearchTabState extends NyState<SearchTab> {
       body: SafeArea(
         child: Column(
           children: [
-            // Search bar
             _buildSearchBar(),
-
-            // Content area
             Expanded(
               child: afterLoad(
                 loadingKey: 'fetch_courses',
@@ -437,7 +339,6 @@ class _SearchTabState extends NyState<SearchTab> {
                         hintStyle: TextStyle(color: Colors.grey, fontSize: 12),
                       ),
                       onSubmitted: (value) {
-                        // Hide keyboard
                         FocusScope.of(context).unfocus();
                       },
                     ),
@@ -455,7 +356,6 @@ class _SearchTabState extends NyState<SearchTab> {
           IconButton(
             icon: Icon(Icons.tune, color: Colors.black),
             onPressed: () {
-              // Show filter options dialog
               _showFilterDialog();
             },
           ),
@@ -463,7 +363,6 @@ class _SearchTabState extends NyState<SearchTab> {
             IconButton(
               icon: Icon(Icons.refresh, color: Colors.black),
               onPressed: () async {
-                // Refresh courses with the latest data
                 await _fetchCourses(refresh: true);
               },
             ),
@@ -473,7 +372,6 @@ class _SearchTabState extends NyState<SearchTab> {
   }
 
   Widget _buildContent() {
-    // Show the empty state only when no courses are loaded at all
     if (_allCourses.isEmpty) {
       return Center(
         child: Column(
@@ -507,8 +405,6 @@ class _SearchTabState extends NyState<SearchTab> {
                 color: Colors.grey,
               ),
             ),
-
-            // Show login button if not authenticated
             if (!_isAuthenticated)
               Padding(
                 padding: const EdgeInsets.only(top: 24.0),
@@ -534,7 +430,6 @@ class _SearchTabState extends NyState<SearchTab> {
       );
     }
 
-    // No results found
     if (_filteredCourses.isEmpty) {
       return Center(
         child: Column(
@@ -566,10 +461,8 @@ class _SearchTabState extends NyState<SearchTab> {
       );
     }
 
-    // Search results
     return Column(
       children: [
-        // Results count
         Padding(
           padding: const EdgeInsets.all(16.0),
           child: Row(
@@ -582,8 +475,6 @@ class _SearchTabState extends NyState<SearchTab> {
                   color: Colors.black87,
                 ),
               ),
-
-              // Sort dropdown
               GestureDetector(
                 onTap: _showSortOptions,
                 child: Row(
@@ -602,8 +493,6 @@ class _SearchTabState extends NyState<SearchTab> {
             ],
           ),
         ),
-
-        // Results list
         Expanded(
           child: ListView.builder(
             padding: EdgeInsets.symmetric(horizontal: 16),
@@ -611,12 +500,11 @@ class _SearchTabState extends NyState<SearchTab> {
             itemBuilder: (context, index) {
               final course = _filteredCourses[index];
 
-              // Check if course is in wishlist
               bool isInWishlist =
                   _wishlistItems.any((c) => c.courseId == course.id);
 
-              // Check if already enrolled
-              bool isEnrolled = _enrolledCourses.any((c) => c.id == course.id);
+              // ✅ Use course.isEnrolled directly
+              bool isEnrolled = course.isEnrolled;
 
               return _buildCourseListItem(course,
                   isInWishlist: isInWishlist, isEnrolled: isEnrolled);
@@ -649,7 +537,6 @@ class _SearchTabState extends NyState<SearchTab> {
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Course image
                 ClipRRect(
                   borderRadius: BorderRadius.only(
                     topLeft: Radius.circular(8),
@@ -673,15 +560,12 @@ class _SearchTabState extends NyState<SearchTab> {
                     },
                   ),
                 ),
-
-                // Course info
                 Expanded(
                   child: Padding(
                     padding: const EdgeInsets.all(12.0),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // Title
                         Text(
                           course.title,
                           style: TextStyle(
@@ -691,10 +575,7 @@ class _SearchTabState extends NyState<SearchTab> {
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                         ),
-
                         SizedBox(height: 4),
-
-                        // Subtitle
                         Text(
                           course.smallDesc,
                           style: TextStyle(
@@ -704,12 +585,8 @@ class _SearchTabState extends NyState<SearchTab> {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
-
                         SizedBox(height: 8),
-
-                        // Provider location
-                        // For course IDs matching the screenshot examples
-                        if (course.id == '5' || course.id == '1')
+                        if (course.id == 5 || course.id == 1)
                           Text(
                             "Pragya Valley, Deepika Nair",
                             style: TextStyle(
@@ -717,10 +594,7 @@ class _SearchTabState extends NyState<SearchTab> {
                               fontWeight: FontWeight.w500,
                             ),
                           ),
-
                         SizedBox(height: 4),
-
-                        // Category
                         Row(
                           children: [
                             Text(
@@ -730,9 +604,7 @@ class _SearchTabState extends NyState<SearchTab> {
                                 color: Colors.grey.shade700,
                               ),
                             ),
-
-                            // Display "LIVE" badge for specific courses
-                            if (course.id == '7')
+                            if (course.id == 7)
                               Container(
                                 margin: EdgeInsets.only(left: 8),
                                 padding: EdgeInsets.symmetric(
@@ -750,8 +622,6 @@ class _SearchTabState extends NyState<SearchTab> {
                                   ),
                                 ),
                               ),
-
-                            // Display enrolled badge if enrolled
                             if (isEnrolled)
                               Container(
                                 margin: EdgeInsets.only(left: 8),
@@ -776,8 +646,6 @@ class _SearchTabState extends NyState<SearchTab> {
                     ),
                   ),
                 ),
-
-                // Wishlist icon (only for authenticated users)
                 if (_isAuthenticated)
                   Padding(
                     padding: const EdgeInsets.only(top: 12.0, right: 12.0),
@@ -792,15 +660,12 @@ class _SearchTabState extends NyState<SearchTab> {
                   ),
               ],
             ),
-
-            // Action buttons
             if (_isAuthenticated)
               Padding(
                 padding: const EdgeInsets.all(12.0),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
-                    // Enroll button
                     ElevatedButton(
                       onPressed: () => _enrollInCourse(course),
                       style: ElevatedButton.styleFrom(
@@ -834,19 +699,17 @@ class _SearchTabState extends NyState<SearchTab> {
   }
 
   void _showFilterDialog() {
-    // Get unique categories for filtering
     final List<String> categories =
         _allCourses.map((course) => course.categoryName).toSet().toList();
 
     showModalBottomSheet(
       context: context,
-      isScrollControlled: true, // Allows the modal to expand if needed
+      isScrollControlled: true,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (context) => Container(
         padding: EdgeInsets.all(16),
-        // Allow more height if we have many categories
         constraints: BoxConstraints(
           maxHeight: MediaQuery.of(context).size.height * 0.7,
         ),
@@ -862,14 +725,11 @@ class _SearchTabState extends NyState<SearchTab> {
               ),
             ),
             Divider(),
-
-            // Filter options in a scrollable container
             Flexible(
               child: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    // Category filter with dropdown for many categories
                     ExpansionTile(
                       leading: Icon(Icons.category),
                       title: Text(trans("By Category")),
@@ -895,9 +755,7 @@ class _SearchTabState extends NyState<SearchTab> {
                       title: Text(trans("Highest Rated")),
                       onTap: () {
                         pop();
-                        // Sort by rating (simulated since rating isn't in the model)
                         setState(() {
-                          // Typically would sort by rating field, here we use course ID as proxy
                           _filteredCourses.sort((a, b) => b.id.compareTo(a.id));
                         });
                       },
@@ -908,11 +766,9 @@ class _SearchTabState extends NyState<SearchTab> {
                       title: Text(trans("New Courses")),
                       onTap: () {
                         pop();
-                        // Filter to only show courses with IDs 7, 8, 9 (simulating newest courses)
                         setState(() {
                           _filteredCourses = _allCourses
-                              .where((course) =>
-                                  ['7', '8', '9'].contains(course.id))
+                              .where((course) => [7, 8, 9].contains(course.id))
                               .toList();
                         });
                       },
@@ -924,7 +780,6 @@ class _SearchTabState extends NyState<SearchTab> {
                         title: Text(trans("Wishlist Only")),
                         onTap: () {
                           pop();
-                          // Filter to show only wishlist courses
                           setState(() {
                             _filteredCourses = _allCourses
                                 .where((course) => _wishlistItems
@@ -934,17 +789,16 @@ class _SearchTabState extends NyState<SearchTab> {
                         },
                       ),
 
+                    // ✅ Updated to use course.isEnrolled
                     if (_isAuthenticated)
                       ListTile(
                         leading: Icon(Icons.school),
                         title: Text(trans("Enrolled Only")),
                         onTap: () {
                           pop();
-                          // Filter to show only enrolled courses
                           setState(() {
                             _filteredCourses = _allCourses
-                                .where((course) => _enrolledCourses
-                                    .any((c) => c.id == course.id))
+                                .where((course) => course.isEnrolled)
                                 .toList();
                           });
                         },
@@ -953,15 +807,11 @@ class _SearchTabState extends NyState<SearchTab> {
                 ),
               ),
             ),
-
             Divider(),
-
-            // Reset button
             Center(
               child: ElevatedButton(
                 onPressed: () {
                   pop();
-                  // Reset all filters to show all courses
                   setState(() {
                     _filteredCourses = List.from(_allCourses);
                     _searchController.clear();
@@ -1004,8 +854,6 @@ class _SearchTabState extends NyState<SearchTab> {
               ),
             ),
             Divider(),
-
-            // Sort options
             ListTile(
               title: Text(trans("Alphabetical (A-Z)")),
               onTap: () {
@@ -1040,14 +888,12 @@ class _SearchTabState extends NyState<SearchTab> {
     );
   }
 
-  // Skeleton layout for loading state
   Widget _buildSkeletonLayout() {
     return Scaffold(
       backgroundColor: Colors.grey.shade50,
       body: SafeArea(
         child: Column(
           children: [
-            // Search bar skeleton
             Container(
               padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               decoration: BoxDecoration(
@@ -1079,8 +925,6 @@ class _SearchTabState extends NyState<SearchTab> {
                 ],
               ),
             ),
-
-            // Content area skeleton
             Expanded(
               child: ListView.builder(
                 padding: EdgeInsets.all(16),

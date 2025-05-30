@@ -1153,6 +1153,23 @@ class VideoService {
         return false;
       }
 
+      // ✅ Check enrollment using Course model
+      if (!course.isEnrolled || !course.hasValidSubscription) {
+        NyLogger.error(
+            'Cannot download - user not enrolled or subscription invalid');
+
+        _progressStreamController.add({
+          'type': 'error',
+          'errorType': 'enrollmentRequired',
+          'message':
+              'You must be enrolled with a valid subscription to download this video.',
+          'courseId': courseId,
+          'videoId': videoId,
+        });
+
+        return false;
+      }
+
       // Now check if already downloading, watermarking or queued
       if (_downloadingStatus[downloadKey] == true ||
           _watermarkingStatus[downloadKey] == true ||
@@ -1413,11 +1430,15 @@ class VideoService {
     }
   }
 
-  Future<bool> _checkSubscriptionValidity(String courseId) async {
+  Future<bool> _checkSubscriptionValidity(Course course) async {
     try {
-      final courseApiService = CourseApiService();
-      return await courseApiService
-          .checkEnrollmentValidity(int.parse(courseId));
+      // ✅ Use the enrollment status from the Course model
+      if (!course.isEnrolled) {
+        return false;
+      }
+
+      // ✅ Use the helper methods from Course model for subscription validation
+      return course.hasValidSubscription;
     } catch (e) {
       NyLogger.error('Error checking subscription validity: $e');
       return false;
@@ -3753,11 +3774,12 @@ class VideoService {
     required String courseId,
     required String videoId,
     required String watermarkText,
+    required Course course, // ✅ Add Course parameter
     required BuildContext context,
   }) async {
     try {
-      // First check if the user has a valid subscription for this course
-      bool hasValidSubscription = await _checkSubscriptionValidity(courseId);
+      // ✅ Use the course object instead of making API call
+      bool hasValidSubscription = course.hasValidSubscription;
 
       if (!hasValidSubscription) {
         // Show subscription expired dialog
@@ -3780,16 +3802,10 @@ class VideoService {
                   style: TextButton.styleFrom(foregroundColor: Colors.amber),
                   onPressed: () async {
                     Navigator.of(context).pop();
-                    List<CourseCurriculum> curriculumItems =
-                        await getCourseCurriculumItems(int.parse(courseId));
-                    // Navigate to subscription renewal page
+                    // ✅ Use the course object directly
                     routeTo(EnrollmentPlanPage.path, data: {
-                      'curriculum': curriculumItems,
-                      'course': Course.fromJson({
-                        'id': int.parse(courseId),
-
-                        // You may need to fetch other course details here
-                      }),
+                      'curriculum': course.curriculum,
+                      'course': course,
                       'isRenewal': true
                     });
                   },
@@ -3800,6 +3816,7 @@ class VideoService {
         );
         return;
       }
+
       // Get the file path for the video
       String videoPath = await getVideoFilePath(courseId, videoId);
       File videoFile = File(videoPath);
@@ -4002,21 +4019,21 @@ class VideoService {
     }
   }
 
-  Future getCourseCurriculumItems(int courseId) async {
-    final _courseApiService = CourseApiService();
-    List<dynamic> result =
-        await _courseApiService.getCourseCurriculum(courseId);
+  // Future getCourseCurriculumItems(int courseId) async {
+  //   final _courseApiService = CourseApiService();
+  //   List<dynamic> result =
+  //       await _courseApiService.getCourseCurriculum(courseId);
 
-    if (result.length > 100) {
-      // For very large lists, use compute to prevent UI blocking
-      result.sort((a, b) => a['order'].compareTo(b['order']));
-    } else {
-      // For smaller lists, just sort directly
-      result.sort((a, b) => a['order'].compareTo(b['order']));
-    }
+  //   if (result.length > 100) {
+  //     // For very large lists, use compute to prevent UI blocking
+  //     result.sort((a, b) => a['order'].compareTo(b['order']));
+  //   } else {
+  //     // For smaller lists, just sort directly
+  //     result.sort((a, b) => a['order'].compareTo(b['order']));
+  //   }
 
-    return result;
-  }
+  //   return result;
+  // }
 
 // Dispose resources
   void dispose() {

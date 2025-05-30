@@ -49,6 +49,10 @@ class _PurchasedCourseDetailPageState
         Map<String, dynamic> data = widget.data();
         _course = data['course'];
 
+        // ✅ Use Course model fields directly instead of API call
+        _hasValidSubscription = _course.hasValidSubscription;
+        _isEnrolled = _course.isEnrolled;
+
         // Get curriculum from passed data if available
         if (data.containsKey('curriculum') && data['curriculum'] != null) {
           _curriculumItems = List<dynamic>.from(data['curriculum']);
@@ -69,21 +73,22 @@ class _PurchasedCourseDetailPageState
         }
 
         await _loadSavedProgress();
-        await _checkSubscriptionStatus();
+
+        // await _checkSubscriptionStatus();
         await _checkDownloadedVideos();
       };
 
-  Future<void> _checkSubscriptionStatus() async {
-    try {
-      bool isValid =
-          await _courseApiService.checkEnrollmentValidity(_course.id);
-      setState(() {
-        _hasValidSubscription = isValid;
-      });
-    } catch (e) {
-      NyLogger.error('Error checking subscription status: $e');
-    }
-  }
+  // Future<void> _checkSubscriptionStatus() async {
+  //   try {
+  //     bool isValid =
+  //         await _courseApiService.checkEnrollmentValidity(_course.id);
+  //     setState(() {
+  //       _hasValidSubscription = isValid;
+  //     });
+  //   } catch (e) {
+  //     NyLogger.error('Error checking subscription status: $e');
+  //   }
+  // }
 
   Future<void> _loadSavedProgress() async {
     try {
@@ -304,11 +309,13 @@ class _PurchasedCourseDetailPageState
     var item = _curriculumItems[index];
 
     try {
+      // ✅ Pass the course object to playVideo
       await _videoService.playVideo(
         videoUrl: item['video_url'],
         courseId: _course.id.toString(),
         videoId: index.toString(),
         watermarkText: "User",
+        course: _course, // ✅ Add this parameter
         context: context,
       );
 
@@ -688,7 +695,7 @@ class _PurchasedCourseDetailPageState
                   color: Colors.grey.shade700,
                 ),
               ),
-              if (!_hasValidSubscription)
+              if (!_course.hasValidSubscription)
                 Container(
                   margin: EdgeInsets.only(top: 8, bottom: 8),
                   padding: EdgeInsets.all(8),
@@ -703,11 +710,26 @@ class _PurchasedCourseDetailPageState
                           color: Colors.red, size: 20),
                       SizedBox(width: 8),
                       Expanded(
-                        child: Text(
-                          trans(
-                              "Your subscription has expired. Renew to continue accessing the course."),
-                          style: TextStyle(
-                              fontSize: 12, color: Colors.red.shade900),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              trans(
+                                  "Your subscription has expired. Renew to continue accessing the course."),
+                              style: TextStyle(
+                                  fontSize: 12, color: Colors.red.shade900),
+                            ),
+                            if (_course.subscriptionExpiryDate != null)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 4.0),
+                                child: Text(
+                                  trans(
+                                      "Expired on: ${_course.subscriptionExpiryDate!.day}/${_course.subscriptionExpiryDate!.month}/${_course.subscriptionExpiryDate!.year}"),
+                                  style: TextStyle(
+                                      fontSize: 10, color: Colors.red.shade700),
+                                ),
+                              ),
+                          ],
                         ),
                       ),
                       TextButton(

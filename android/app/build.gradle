@@ -3,6 +3,7 @@ plugins {
     id "kotlin-android"
     id "dev.flutter.flutter-gradle-plugin"
     id "com.google.gms.google-services"
+    id "com.google.firebase.crashlytics"  // ADD THIS LINE
 }
 
 def localProperties = new Properties()
@@ -31,8 +32,8 @@ if (keystorePropertiesFile.exists()) {
 }
 
 android {
-    namespace "com.bybhavani.com"
-    compileSdk 35  // Changed from 35 to 34 for better compatibility
+    namespace "com.bhavani.com"
+    compileSdk 35
     ndkVersion = "25.1.8937393"
 
     packagingOptions {
@@ -64,9 +65,9 @@ android {
     }
 
     defaultConfig {
-        applicationId "com.bybhavani.com"
+        applicationId "com.bhavani.com"
         minSdkVersion 24
-        targetSdkVersion 35  // Changed from 35 to 34
+        targetSdkVersion 35
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
         multiDexEnabled true
@@ -92,6 +93,9 @@ android {
             }
             minifyEnabled false
             shrinkResources false
+            firebaseCrashlytics {
+                nativeSymbolUploadEnabled false
+            }
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
         
@@ -108,8 +112,9 @@ flutter {
 
 dependencies {
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
-    implementation platform('com.google.firebase:firebase-bom:33.13.0')
+    implementation platform('com.google.firebase:firebase-bom:33.14.0')
     implementation 'com.google.firebase:firebase-analytics'
+    implementation 'com.google.firebase:firebase-crashlytics'  // ADD THIS LINE
     implementation 'com.google.android.gms:play-services-auth:20.7.0'
     implementation 'androidx.multidex:multidex:2.0.1'
 }

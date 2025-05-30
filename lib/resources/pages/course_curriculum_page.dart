@@ -132,13 +132,13 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(trans(
-                  "Your subscription to this course has expired during your session.")),
+              Text(trans("Your subscription to this course has expired.")),
               SizedBox(height: 8),
-              if (_subscriptionExpiryDate != null)
+              // ✅ Use course model data directly
+              if (course?.subscriptionExpiryDate != null)
                 Text(
                   trans(
-                      "Expired on: ${_subscriptionExpiryDate!.day}/${_subscriptionExpiryDate!.month}/${_subscriptionExpiryDate!.year}"),
+                      "Expired on: ${course!.subscriptionExpiryDate!.day}/${course!.subscriptionExpiryDate!.month}/${course!.subscriptionExpiryDate!.year}"),
                   style: TextStyle(fontSize: 12, color: Colors.grey[600]),
                 ),
               SizedBox(height: 8),
@@ -173,7 +173,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
     });
   }
 
-// ✅ Show subscription required dialog
+//  Show subscription required dialog
   void _showSubscriptionRequiredDialog() {
     showDialog(
       context: context,
@@ -187,10 +187,11 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
               Text(trans(
                   "A valid subscription is required to download and access course content.")),
               SizedBox(height: 8),
-              if (_subscriptionExpiryDate != null)
+              // ✅ Use course model data directly
+              if (course?.subscriptionExpiryDate != null)
                 Text(
                   trans(
-                      "Your subscription expired on: ${_subscriptionExpiryDate!.day}/${_subscriptionExpiryDate!.month}/${_subscriptionExpiryDate!.year}"),
+                      "Your subscription expired on: ${course!.subscriptionExpiryDate!.day}/${course!.subscriptionExpiryDate!.month}/${course!.subscriptionExpiryDate!.year}"),
                   style: TextStyle(fontSize: 12, color: Colors.grey[600]),
                 ),
               SizedBox(height: 8),
@@ -227,9 +228,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
   Future<bool> _validateSubscriptionForDownload() async {
     if (course == null) return false;
 
-    await _validateSubscriptionStatus();
-
-    if (!_hasValidSubscription) {
+    if (!course!.hasValidSubscription) {
       _showSubscriptionRequiredDialog();
       return false;
     }
@@ -321,7 +320,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
 
     // Initialize network preferences
     _loadNetworkPreferences();
-    _setupSubscriptionValidation();
+    // _setupSubscriptionValidation();
   }
 
   void _handlePermissionRequired() {
@@ -414,8 +413,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
           }
 
           if (course != null) {
-            await _validateSubscriptionStatus();
-
+            // Show expired banner if subscription is not valid
             if (!_hasValidSubscription) {
               setState(() {
                 _showExpiredBanner = true;
@@ -1002,18 +1000,14 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
     // Cancel stream subscription to avoid memory leaks
     _progressSubscription?.cancel();
     _scrollController.dispose();
-
     // Close bottom sheet if open
     _bottomSheetController?.close();
-    _subscriptionCheckTimer?.cancel();
-    _scrollController.dispose();
-    _subscriptionCheckTimer?.cancel();
+    // _subscriptionCheckTimer?.cancel();
 
     _downloadProgressSubscription?.cancel();
 
     _progressSubscription = null;
 
-    _bottomSheetController?.close();
     super.dispose();
   }
 
@@ -1343,15 +1337,18 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
     if (!await _validateSubscriptionForDownload()) {
       return;
     }
+
     var item = curriculumItems[index];
     bool isDownloaded = _downloadedStatus[index] ?? false;
 
     if (isDownloaded) {
+      // ✅ Pass course object to playVideo method
       await _videoService.playVideo(
         videoUrl: item['video_url'],
         courseId: course!.id.toString(),
         videoId: index.toString(),
         watermarkText: _username,
+        course: course!, // ✅ Add this parameter
         context: context,
       );
 
@@ -1360,16 +1357,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
         _completedLessons[index] = true;
       });
 
-      // Save progress
       await _saveProgress();
-
-      // ScaffoldMessenger.of(context).showSnackBar(
-      //   SnackBar(
-      //     content: Text(trans("Lesson marked as completed")),
-      //     backgroundColor: Colors.green,
-      //     duration: const Duration(seconds: 2),
-      //   ),
-      // );
     } else {
       // Prompt to download
       await showDialog(

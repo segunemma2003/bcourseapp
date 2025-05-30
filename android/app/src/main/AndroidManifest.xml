@@ -1,5 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.bybhavani.com">
+    package="com.bhavani.com">
 
     <!-- ALL PERMISSIONS MUST BE HERE - OUTSIDE <application> TAG -->
     
@@ -85,7 +85,7 @@
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="com.bybhavani.app" /> 
+                <data android:scheme="com.bhavani.app" /> 
             </intent-filter>
         </activity>
 

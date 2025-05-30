@@ -139,9 +139,9 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
             return;
           }
 
-          if (_isEnrolled) {
-            await _refreshEnrollmentDetails(courseDetail!.id);
-          }
+          // if (_isEnrolled) {
+          //   await _refreshEnrollmentDetails(courseDetail!.id);
+          // }
 
           int courseId = courseDetail!.id;
           List<Future> futures = [];
@@ -247,6 +247,30 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
     }
   }
 
+  @override
+  get stateActions => {
+        "course_enrolled": (Map<String, dynamic> data) async {
+          if (data.containsKey('updatedCourse') &&
+              data.containsKey('courseId') &&
+              data['courseId'].toString() == courseDetail?.id.toString()) {
+            try {
+              Course updatedCourse = Course.fromJson(data['updatedCourse']);
+              setState(() {
+                courseDetail = updatedCourse;
+                _isEnrolled = updatedCourse.isEnrolled;
+                _extractSubscriptionDetails();
+              });
+
+              NyLogger.info(
+                  'Updated course enrollment status in CourseDetailPage');
+            } catch (e) {
+              NyLogger.error(
+                  'Error updating course detail enrollment status: $e');
+            }
+          }
+        },
+      };
+
   Future<void> _loadCourseCurriculum(int courseId) async {
     try {
       List<dynamic> result =
@@ -282,10 +306,11 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
               children: [
                 Text(trans("Your subscription to this course has expired.")),
                 SizedBox(height: 8),
-                if (_subscriptionExpiryDate != null)
+                // ✅ Use course model data directly
+                if (courseDetail?.subscriptionExpiryDate != null)
                   Text(
                     trans(
-                        "Expired on: ${_subscriptionExpiryDate!.day}/${_subscriptionExpiryDate!.month}/${_subscriptionExpiryDate!.year}"),
+                        "Expired on: ${courseDetail!.subscriptionExpiryDate!.day}/${courseDetail!.subscriptionExpiryDate!.month}/${courseDetail!.subscriptionExpiryDate!.year}"),
                     style: TextStyle(fontSize: 12, color: Colors.grey[600]),
                   ),
                 SizedBox(height: 8),
@@ -347,12 +372,13 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
                 "Your subscription has expired. Please renew to continue accessing the course."),
             style: TextStyle(fontSize: 12),
           ),
-          if (_subscriptionExpiryDate != null)
+          // ✅ Use course model data directly
+          if (courseDetail?.subscriptionExpiryDate != null)
             Padding(
               padding: const EdgeInsets.only(top: 4.0),
               child: Text(
                 trans(
-                    "Expired on: ${_subscriptionExpiryDate!.day}/${_subscriptionExpiryDate!.month}/${_subscriptionExpiryDate!.year}"),
+                    "Expired on: ${courseDetail!.subscriptionExpiryDate!.day}/${courseDetail!.subscriptionExpiryDate!.month}/${courseDetail!.subscriptionExpiryDate!.year}"),
                 style: TextStyle(fontSize: 10, color: Colors.grey[600]),
               ),
             ),
@@ -520,8 +546,13 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
         }
 
         showToastSuccess(description: trans("Successfully enrolled in course"));
+
+        // ✅ After enrollment, update the course status locally
         setState(() {
           _isEnrolled = true;
+          // ✅ Update course object to reflect enrollment
+          courseDetail = courseDetail!.copyWith(isEnrolled: true);
+          _extractSubscriptionDetails();
         });
 
         Future.microtask(() {

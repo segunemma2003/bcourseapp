@@ -66,6 +66,22 @@
       },
       "oauth_client": [
         {
+          "client_id": "1044597569034-chqqbok3af412rrr44uutv6ed8iq4v27.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.bybhavani.com",
+            "certificate_hash": "91e1fa7e630017756990251330de6e683625f00e"
+          }
+        },
+        {
+          "client_id": "1044597569034-fts1e3ddudm71gf5pbhetodkkilho6t7.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.bybhavani.com",
+            "certificate_hash": "b01a74a55d02f410823ae138b3f91027e47c4ef9"
+          }
+        },
+        {
           "client_id": "1044597569034-lm3hngslgaurka0f95iho2u98ip0l27a.apps.googleusercontent.com",
           "client_type": 3
         }

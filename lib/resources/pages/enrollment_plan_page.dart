@@ -618,8 +618,10 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
 // Get updated course with fresh enrollment details
       Course updatedCourse;
       try {
-        updatedCourse =
-            await courseApiService.getCourseWithEnrollmentDetails(course!.id);
+        updatedCourse = await courseApiService
+            .getCourseWithEnrollmentDetails(course!.id, refresh: true);
+        NyLogger.info(
+            'Retrieved updated course with enrollment details: ${updatedCourse.isEnrolled}, ${updatedCourse.hasValidSubscription}');
       } catch (e) {
         // Fallback: create updated course manually
         updatedCourse = Course(
@@ -752,6 +754,17 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
                     'course': updatedCourse, // Pass the updated course
                     'curriculum': curriculumItems,
                   });
+                  final updateData = {
+                    'type': 'course_enrolled',
+                    'courseId': course!.id,
+                    'updatedCourse': updatedCourse
+                        .toJson(), // Pass the complete updated course
+                    'enrollmentSuccess': true,
+                  };
+                  updateState('/search_tab', data: updateData);
+                  updateState('/home_tab', data: updateData);
+                  updateState('/course-detail', data: updateData);
+                  updateState('/wishlist_tab', data: updateData);
                 },
               ),
             ],

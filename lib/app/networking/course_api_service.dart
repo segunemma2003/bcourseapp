@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_app/app/networking/cache_invalidation_manager.dart';
 import '../../utils/system_util.dart';
@@ -227,9 +229,9 @@ class CourseApiService extends NyApiService {
     }
   }
 
-  /// Get user's enrolled courses with short caching
   Future<List<dynamic>> getEnrolledCourses({bool refresh = false}) async {
     final authToken = await backpackRead('auth_token');
+    print(authToken);
     if (authToken == null) {
       throw Exception("Not logged in");
     }
@@ -238,20 +240,167 @@ class CourseApiService extends NyApiService {
 
     if (refresh) {
       await cache().clear(cacheKey);
+      NyLogger.info('Cleared enrolled courses cache due to refresh request');
     }
-
+    final headers = await getAuthHeaders();
+    await Future.delayed(Duration(milliseconds: Random().nextInt(100)));
     return await network(
         request: (request) => request.get("/enrollments/"),
-        headers: {"Authorization": "Token $authToken"},
+        headers: headers,
         cacheKey: cacheKey,
-        cacheDuration: CACHE_ENROLLED_COURSES,
+        cacheDuration: Duration(hours: 1),
         handleSuccess: (Response response) {
-          return _parseCoursesResponse(response.data, 'enrolled courses');
+          try {
+            NyLogger.info(
+                'Raw API Response type: ${response.data.runtimeType}');
+            NyLogger.info('Raw API Response: ${response.data}');
+
+            // ✅ The API returns a direct array, not paginated response
+            List<dynamic> courses;
+
+            if (response.data is List) {
+              // Direct array response (this is what your API returns)
+              courses = response.data as List<dynamic>;
+              NyLogger.info(
+                  '✅ Parsed direct array response with ${courses.length} courses');
+            } else if (response.data is Map) {
+              // Handle edge cases if response format changes
+              final responseMap = response.data as Map;
+              if (responseMap.containsKey('results')) {
+                courses = responseMap['results'] as List<dynamic>;
+                NyLogger.info(
+                    '✅ Parsed paginated response with ${courses.length} courses');
+              } else {
+                NyLogger.error('❌ Unexpected map response structure');
+                NyLogger.error('Available keys: ${responseMap.keys.toList()}');
+                throw Exception(
+                    "Unexpected response format: Map without results");
+              }
+            } else {
+              NyLogger.error(
+                  '❌ Unexpected response type: ${response.data.runtimeType}');
+              throw Exception(
+                  "Unexpected response type: ${response.data.runtimeType}");
+            }
+
+            // Validate the course data structure
+            for (int i = 0; i < courses.length; i++) {
+              final course = courses[i];
+              if (course is! Map) {
+                NyLogger.error(
+                    '⚠️ Course at index $i is not a Map: ${course.runtimeType}');
+              } else {
+                NyLogger.info('✅ Course $i has keys: ${course.keys.toList()}');
+              }
+            }
+
+            NyLogger.info(
+                '✅ Successfully fetched ${courses.length} enrolled courses');
+            return courses;
+          } catch (parseError) {
+            NyLogger.error(
+                '❌ Error parsing enrolled courses response: $parseError');
+            NyLogger.error('Response data type: ${response.data.runtimeType}');
+            NyLogger.error('Response data: ${response.data}');
+            rethrow; // Re-throw to trigger handleFailure
+          }
         },
         handleFailure: (DioException dioError) {
-          throw Exception(
-              "Failed to fetch enrolled courses: ${dioError.message}");
+          String errorMessage = "Failed to fetch enrolled courses";
+
+          // Enhanced error handling
+          switch (dioError.type) {
+            case DioExceptionType.connectionTimeout:
+              errorMessage =
+                  "Connection timeout - please check your internet connection";
+              break;
+            case DioExceptionType.receiveTimeout:
+              errorMessage =
+                  "Server response timeout - the request is taking too long";
+              break;
+            case DioExceptionType.sendTimeout:
+              errorMessage = "Request timeout - please try again";
+              break;
+            case DioExceptionType.badResponse:
+              if (dioError.response?.statusCode == 500) {
+                errorMessage = "Server error - please try again later";
+              } else if (dioError.response?.statusCode == 401) {
+                errorMessage = "Authentication failed - please login again";
+              } else if (dioError.response?.statusCode == 403) {
+                errorMessage = "Access denied - insufficient permissions";
+              } else {
+                errorMessage =
+                    "Server error (${dioError.response?.statusCode})";
+              }
+              break;
+            case DioExceptionType.cancel:
+              errorMessage = "Request was cancelled";
+              break;
+            case DioExceptionType.connectionError:
+              errorMessage = "Connection error - please check your internet";
+              break;
+            default:
+              errorMessage = "Network error occurred";
+          }
+
+          NyLogger.error(
+              '❌ getEnrolledCourses error: ${dioError.type} - ${dioError.message}');
+          NyLogger.error('Response status: ${dioError.response?.statusCode}');
+          NyLogger.error('Response data: ${dioError.response?.data}');
+
+          throw Exception("$errorMessage: ${dioError.message}");
         });
+  }
+
+  Future<void> preloadEnrolledCoursesInBackground() async {
+    try {
+      final authToken = await backpackRead('auth_token');
+      if (authToken == null) return;
+
+      // Check if we already have recent cached data
+      final cachedData = await cache().get('enrolled_courses');
+      if (cachedData != null) {
+        NyLogger.info(
+            'Enrolled courses already cached, skipping background preload');
+        return;
+      }
+
+      // Load in background without waiting
+      Future.microtask(() async {
+        try {
+          await getEnrolledCourses();
+          NyLogger.info('Background preload of enrolled courses completed');
+        } catch (e) {
+          NyLogger.error('Background preload of enrolled courses failed: $e');
+        }
+      });
+    } catch (e) {
+      NyLogger.error('Error starting background enrolled courses preload: $e');
+    }
+  }
+
+  /// Get enrolled courses with fallback to cached data on error
+  Future<List<dynamic>> getEnrolledCoursesWithFallback(
+      {bool refresh = false}) async {
+    try {
+      // Try to get fresh data
+      return await getEnrolledCourses(refresh: refresh);
+    } catch (e) {
+      NyLogger.error('Primary enrolled courses fetch failed: $e');
+
+      try {
+        final cachedData = await cache().get('enrolled_courses');
+        if (cachedData != null && cachedData is List) {
+          NyLogger.info('Using cached enrolled courses data as fallback');
+          return cachedData;
+        }
+      } catch (cacheError) {
+        NyLogger.error('Cache fallback failed: $cacheError');
+      }
+
+      NyLogger.error('Returning empty enrolled courses list as last resort');
+      return [];
+    }
   }
 
   /// Get user's wishlist with short caching
@@ -525,6 +674,10 @@ class CourseApiService extends NyApiService {
           NyLogger.error('Failed to preload all courses: $e');
           return <dynamic>[];
         }),
+        preloadEnrolledCoursesInBackground().catchError((e) {
+          NyLogger.error('Failed to preload enrolled courses: $e');
+          return <dynamic>[];
+        }),
       ]);
 
       if (isAuthenticated) {
@@ -719,13 +872,75 @@ class CourseApiService extends NyApiService {
 
   /// Invalidate caches after purchase
   Future<void> _invalidatePostPurchaseCaches(int courseId) async {
+    // Clear ALL course-related caches to ensure fresh data everywhere
     await Future.wait([
+      // User-specific caches
       cache().clear('enrolled_courses'),
+      cache().clear('wishlist'),
+
+      // Course-specific caches
       cache().clear('course_details_$courseId'),
       cache().clear('course_complete_details_$courseId'),
-      cache().clear('wishlist'),
+      cache().clear('course_curriculum_$courseId'),
+
+      // General course listing caches - CRITICAL for SearchTab updates
+      cache().clear('featured_courses'),
+      cache().clear('top_courses'),
+      cache().clear('courses'), // Base courses cache
+
+      // Category-specific caches (we need to clear all categories)
+      _clearAllCategoryCaches(),
     ]);
+    Future.microtask(() async {
+      try {
+        await getEnrolledCoursesWithFallback(refresh: true);
+        NyLogger.info('Preloaded fresh enrolled courses after purchase');
+      } catch (e) {
+        NyLogger.error('Failed to preload enrolled courses after purchase: $e');
+      }
+    });
+    NyLogger.info(
+        'Invalidated all course caches after purchase for course $courseId');
   }
+
+  Future<bool> _isNetworkAvailable() async {
+    try {
+      final result = await InternetAddress.lookup('google.com');
+      return result.isNotEmpty && result[0].rawAddress.isNotEmpty;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  Future<List<dynamic>> getEnrolledCoursesWithNetworkCheck(
+      {bool refresh = false}) async {
+    // Check network first
+    final hasNetwork = await _isNetworkAvailable();
+    if (!hasNetwork) {
+      NyLogger.error('No network available, using cached enrolled courses');
+      final cachedData = await cache().get('enrolled_courses');
+      if (cachedData != null && cachedData is List) {
+        return cachedData;
+      }
+      throw Exception("No internet connection and no cached data available");
+    }
+
+    return await getEnrolledCoursesWithFallback(refresh: refresh);
+  }
+
+  Future<void> _clearAllCategoryCaches() async {
+    try {
+      // Get all possible category IDs and clear their caches
+      // This is a brute force approach but ensures consistency
+      for (int categoryId = 1; categoryId <= 20; categoryId++) {
+        await cache().clear('courses_category_$categoryId');
+      }
+    } catch (e) {
+      NyLogger.error('Error clearing category caches: $e');
+    }
+  }
+
+// Clear all search cache
 
   /// Invalidate caches after enrollment
   Future<void> _invalidatePostEnrollmentCaches(int courseId) async {

@@ -82,5 +82,5 @@
 -keep class * implements com.google.gson.JsonDeserializer
 
 # Your app's model classes (adjust package name)
--keep class com.bybhavani.com.models.** { *; }
--keep class com.bybhavani.com.app.models.** { *; }
+-keep class com.bhavani.com.models.** { *; }
+-keep class com.bhavani.com.app.models.** { *; }

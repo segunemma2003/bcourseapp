@@ -20,13 +20,7 @@ class _CoursesTabState extends NyState<CoursesTab> {
   bool _hasCourses = false;
   bool _isAuthenticated = false;
 
-  // Store curriculum data to avoid repeated API calls
-  Map<String, List<dynamic>> _curriculumCache = {};
-  Map<String, List<dynamic>> _objectivesCache = {};
-  Map<String, List<dynamic>> _requirementsCache = {};
-
   Map<String, double> _courseProgress = {};
-  Map<String, int> _courseVideoCount = {};
 
   _CoursesTabState() {
     stateName = CoursesTab.state;
@@ -79,53 +73,25 @@ class _CoursesTabState extends NyState<CoursesTab> {
           var completedCount =
               completedLessons.values.where((v) => v == true).length;
 
-          // Get video count from cache first, then API if needed
-          int totalVideos = await _getCourseVideoCount(course.id);
+          // ✅ Use curriculum data from the course object instead of API call
+          int totalVideos = course.curriculum.length;
           double progress =
               totalVideos > 0 ? completedCount / totalVideos : 0.0;
 
           setState(() {
             _courseProgress[course.id.toString()] = progress;
-            _courseVideoCount[course.id.toString()] = totalVideos;
           });
         } else {
-          int totalVideos = await _getCourseVideoCount(course.id);
           setState(() {
             _courseProgress[course.id.toString()] = 0.0;
-            _courseVideoCount[course.id.toString()] = totalVideos;
           });
         }
       } catch (e) {
         NyLogger.error('Failed to load progress for course ${course.id}: $e');
         setState(() {
           _courseProgress[course.id.toString()] = 0.0;
-          _courseVideoCount[course.id.toString()] = 0;
         });
       }
-    }
-  }
-
-  Future<int> _getCourseVideoCount(int courseId) async {
-    String cacheKey = courseId.toString();
-
-    // Check cache first
-    if (_curriculumCache.containsKey(cacheKey)) {
-      return _curriculumCache[cacheKey]!.length;
-    }
-
-    // Fetch and cache curriculum
-    try {
-      var courseApiService = CourseApiService();
-      List<dynamic> curriculum =
-          await courseApiService.getCourseCurriculum(courseId);
-
-      // Cache for future use
-      _curriculumCache[cacheKey] = curriculum;
-
-      return curriculum.length;
-    } catch (e) {
-      NyLogger.error('Error fetching curriculum for course $courseId: $e');
-      return 0;
     }
   }
 
@@ -144,8 +110,9 @@ class _CoursesTabState extends NyState<CoursesTab> {
       var courseApiService = CourseApiService();
 
       try {
-        List<dynamic> enrolledCoursesData =
-            await courseApiService.getEnrolledCourses();
+        // ✅ Use the improved method with fallback
+        List<dynamic> enrolledCoursesData = await courseApiService
+            .getEnrolledCoursesWithFallback(refresh: refresh);
 
         if (enrolledCoursesData.isNotEmpty) {
           _enrolledCourses = enrolledCoursesData
@@ -153,30 +120,55 @@ class _CoursesTabState extends NyState<CoursesTab> {
               .toList();
           _hasCourses = _enrolledCourses.isNotEmpty;
 
-          // Preload curriculum data in background for better UX
-          if (!refresh) {
-            _preloadCourseData();
-          }
+          NyLogger.info(
+              'Successfully loaded ${_enrolledCourses.length} enrolled courses with curriculum data');
         } else {
           _enrolledCourses = [];
           _hasCourses = false;
+          NyLogger.info('No enrolled courses found');
         }
       } catch (e) {
-        NyLogger.error('API Error: $e. Checking local storage...');
+        NyLogger.error('Enrolled courses API Error: $e');
 
-        List<String>? enrolledCourseIds =
-            await NyStorage.read('enrolled_course_ids');
+        // ✅ Enhanced fallback to local storage
+        try {
+          List<String>? enrolledCourseIds =
+              await NyStorage.read('enrolled_course_ids');
 
-        if (enrolledCourseIds != null && enrolledCourseIds.isNotEmpty) {
-          List<dynamic> allCoursesData = await courseApiService.getAllCourses();
-          List<Course> allCourses =
-              allCoursesData.map((data) => Course.fromJson(data)).toList();
+          if (enrolledCourseIds != null && enrolledCourseIds.isNotEmpty) {
+            NyLogger.info(
+                'Falling back to local storage for enrolled course IDs');
 
-          _enrolledCourses = allCourses
-              .where((course) => enrolledCourseIds.contains(course.id))
-              .toList();
-          _hasCourses = _enrolledCourses.isNotEmpty;
-        } else {
+            // Try to get courses with timeout protection
+            List<dynamic> allCoursesData = await courseApiService
+                .getAllCourses()
+                .timeout(Duration(seconds: 10), onTimeout: () {
+              NyLogger.error('getAllCourses timed out, using empty list');
+              return <dynamic>[];
+            });
+
+            if (allCoursesData.isNotEmpty) {
+              List<Course> allCourses =
+                  allCoursesData.map((data) => Course.fromJson(data)).toList();
+
+              _enrolledCourses = allCourses
+                  .where((course) =>
+                      enrolledCourseIds.contains(course.id.toString()))
+                  .toList();
+              _hasCourses = _enrolledCourses.isNotEmpty;
+
+              NyLogger.info(
+                  'Loaded ${_enrolledCourses.length} courses from local storage fallback');
+            } else {
+              _enrolledCourses = [];
+              _hasCourses = false;
+            }
+          } else {
+            _enrolledCourses = [];
+            _hasCourses = false;
+          }
+        } catch (fallbackError) {
+          NyLogger.error('Local storage fallback also failed: $fallbackError');
           _enrolledCourses = [];
           _hasCourses = false;
         }
@@ -186,11 +178,19 @@ class _CoursesTabState extends NyState<CoursesTab> {
     } catch (e) {
       NyLogger.error('Failed to fetch enrolled courses: $e');
 
+      String userMessage = "Failed to load your courses";
+      if (e.toString().contains("timeout")) {
+        userMessage =
+            "Connection timeout - please check your internet and try again";
+      } else if (e.toString().contains("500")) {
+        userMessage = "Server temporarily unavailable - please try again";
+      }
+
       showToast(
           title: trans("Error"),
-          description: trans("Failed to load your courses"),
+          description: trans(userMessage),
           icon: Icons.error_outline,
-          style: ToastNotificationStyleType.danger);
+          style: ToastNotificationStyleType.warning);
 
       setState(() {
         _enrolledCourses = [];
@@ -201,76 +201,37 @@ class _CoursesTabState extends NyState<CoursesTab> {
     }
   }
 
-  // Preload course data in background for better performance
-  Future<void> _preloadCourseData() async {
-    final courseApiService = CourseApiService();
-
-    for (var course in _enrolledCourses) {
-      String cacheKey = course.id.toString();
-
-      // Skip if already cached
-      if (_curriculumCache.containsKey(cacheKey)) continue;
-
-      // Preload curriculum, objectives, and requirements in parallel
-      Future.wait([
-        courseApiService.getCourseCurriculum(course.id).then((curriculum) {
-          _curriculumCache[cacheKey] = curriculum;
-        }).catchError((e) {
-          NyLogger.error('Error preloading curriculum for ${course.id}: $e');
-        }),
-        courseApiService.getCourseObjectives(course.id).then((objectives) {
-          _objectivesCache[cacheKey] = objectives;
-        }).catchError((e) {
-          NyLogger.error('Error preloading objectives for ${course.id}: $e');
-        }),
-        courseApiService.getCourseRequirements(course.id).then((requirements) {
-          _requirementsCache[cacheKey] = requirements;
-        }).catchError((e) {
-          NyLogger.error('Error preloading requirements for ${course.id}: $e');
-        }),
-      ]);
-    }
-  }
-
   void _onGetStartedPressed() async {
     routeTo(BaseNavigationHub.path, tabIndex: 1);
   }
 
   void _onStartCourse(Course course) {
-    String cacheKey = course.id.toString();
-
-    // Pass cached data to avoid API calls
+    // ✅ Simply pass the course object - all data is already available
     Map<String, dynamic> courseData = {
       'course': course,
+      // No need to pass separate curriculum, objectives, or requirements
+      // as they're already part of the course object
     };
-
-    // Add cached curriculum if available
-    if (_curriculumCache.containsKey(cacheKey)) {
-      courseData['curriculum'] = _curriculumCache[cacheKey];
-    }
-
-    // Add cached objectives if available
-    if (_objectivesCache.containsKey(cacheKey)) {
-      courseData['objectives'] = _objectivesCache[cacheKey];
-    }
-
-    // Add cached requirements if available
-    if (_requirementsCache.containsKey(cacheKey)) {
-      courseData['requirements'] = _requirementsCache[cacheKey];
-    }
 
     routeTo(PurchasedCourseDetailPage.path, data: courseData);
   }
 
   Future<void> _onRefresh() async {
     await lockRelease('refresh_courses', perform: () async {
-      // Clear caches on refresh
-      _curriculumCache.clear();
-      _objectivesCache.clear();
-      _requirementsCache.clear();
+      try {
+        await _fetchEnrolledCourses(refresh: true);
 
-      await _fetchEnrolledCourses(refresh: true);
-      showToastSuccess(description: trans("Courses refreshed successfully"));
+        if (_hasCourses) {
+          showToastSuccess(
+              description: trans("Courses refreshed successfully"));
+        } else if (_isAuthenticated) {
+          showToastInfo(description: trans("No enrolled courses found"));
+        }
+      } catch (e) {
+        NyLogger.error('Refresh failed: $e');
+        showToastWarning(
+            description: trans("Refresh failed - using cached data"));
+      }
     });
   }
 
@@ -521,8 +482,8 @@ class _CoursesTabState extends NyState<CoursesTab> {
 
   Widget _buildCourseItem(Course course) {
     double progressPercentage = _courseProgress[course.id.toString()] ?? 0.0;
-    int videoCount =
-        _courseVideoCount[course.id.toString()] ?? ((course.id) % 10) + 5;
+    // ✅ Use the curriculum length from the course object
+    int videoCount = course.curriculum.length;
 
     return Container(
       decoration: BoxDecoration(

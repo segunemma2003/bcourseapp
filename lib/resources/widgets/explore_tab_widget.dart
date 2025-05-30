@@ -3,6 +3,7 @@ import 'package:flutter_app/app/models/course.dart';
 import 'package:flutter_app/resources/pages/notifications_page.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 
+import '../../app/helpers/error_logger.dart';
 import '../../app/networking/course_api_service.dart';
 import '../../utils/system_util.dart';
 import 'course_card_widget.dart';
@@ -39,13 +40,13 @@ class _ExploreTabState extends NyState<ExploreTab> {
   @override
   get stateActions => {
         "refresh_featured_courses": () async {
-          await _loadFeaturedCourses();
+          await _loadFeaturedCoursesForce();
         },
         "refresh_top_courses": () async {
-          await _loadTopCourses();
+          await _loadTopCoursesForce();
         },
         "refresh_all_courses": () async {
-          await _loadAllCourses();
+          await _loadAllCoursesForce();
         },
         "refresh_all": () {
           reboot();
@@ -79,8 +80,29 @@ class _ExploreTabState extends NyState<ExploreTab> {
           .toList();
 
       setState(() => _isFeaturedLoading = false);
-    } catch (e) {
-      NyLogger.error('Error loading featured courses: ${e.toString()}');
+    } catch (error, stackTrace) {
+      NyLogger.error('Error loading featured courses: ${error.toString()}');
+      await ErrorLogger.logError(error, stackTrace);
+      setState(() => _isFeaturedLoading = false);
+    }
+  }
+
+  Future<void> _loadFeaturedCoursesForce() async {
+    try {
+      setState(() => _isFeaturedLoading = true);
+
+      // Get data from API and map to Course objects
+      var apiResponse = await _courseApiService.getFeaturedCourses();
+
+      // Map the API response to List<Course>
+      featuredCourses = apiResponse
+          .map<Course>((courseData) => Course.fromJson(courseData))
+          .toList();
+
+      setState(() => _isFeaturedLoading = false);
+    } catch (error, stackTrace) {
+      NyLogger.error('Error loading featured courses: ${error.toString()}');
+      await ErrorLogger.logError(error, stackTrace);
       setState(() => _isFeaturedLoading = false);
     }
   }
@@ -98,7 +120,28 @@ class _ExploreTabState extends NyState<ExploreTab> {
           .toList();
 
       setState(() => _isTopCoursesLoading = false);
-    } catch (e) {
+    } catch (e, s) {
+      await ErrorLogger.logError(e, s);
+      NyLogger.error('Error loading top courses: ${e.toString()}');
+      setState(() => _isTopCoursesLoading = false);
+    }
+  }
+
+  Future<void> _loadTopCoursesForce() async {
+    try {
+      setState(() => _isTopCoursesLoading = true);
+
+      // Get data from API and map to Course objects
+      var apiResponse = await _courseApiService.getTopCourses();
+
+      // Map the API response to List<Course>
+      topCourses = apiResponse
+          .map<Course>((courseData) => Course.fromJson(courseData))
+          .toList();
+
+      setState(() => _isTopCoursesLoading = false);
+    } catch (e, s) {
+      await ErrorLogger.logError(e, s);
       NyLogger.error('Error loading top courses: ${e.toString()}');
       setState(() => _isTopCoursesLoading = false);
     }
@@ -110,6 +153,33 @@ class _ExploreTabState extends NyState<ExploreTab> {
 
       // Get data from API and map to Course objects
       var apiResponse = await _courseApiService.getAllCourses(refresh: true);
+
+      // Map the API response to List<Course> and take only the latest 10
+      List<Course> courses = apiResponse
+          .map<Course>((courseData) => Course.fromJson(courseData))
+          .toList();
+
+      // Sort by date if available, or just take the first 10
+      if (courses.isNotEmpty) {
+        courses.sort((a, b) => b.dateUploaded.compareTo(a.dateUploaded));
+      }
+
+      // Take only the first 10 courses
+      allCourses = courses.take(10).toList();
+
+      setState(() => _isAllCoursesLoading = false);
+    } catch (e) {
+      NyLogger.error('Error loading all courses: ${e.toString()}');
+      setState(() => _isAllCoursesLoading = false);
+    }
+  }
+
+  Future<void> _loadAllCoursesForce() async {
+    try {
+      setState(() => _isAllCoursesLoading = true);
+
+      // Get data from API and map to Course objects
+      var apiResponse = await _courseApiService.getAllCourses();
 
       // Map the API response to List<Course> and take only the latest 10
       List<Course> courses = apiResponse

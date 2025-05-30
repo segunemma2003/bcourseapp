@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_app/app/networking/cache_invalidation_manager.dart';
+import 'package:flutter_app/app/networking/token_helper.dart';
 import 'package:flutter_app/utils/system_util.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import '../providers/firebase_service_provider.dart';
@@ -43,8 +44,7 @@ class UserApiService extends NyApiService {
           // Store user token and data
           final responseData = response.data;
           if (responseData['key'] != null) {
-            await backpackSave('auth_token', responseData['key']);
-
+            await TokenSyncHelper.saveAuthToken(responseData['key']);
             if (responseData['user'] != null) {
               await storageSave("user", responseData['user']);
               await Auth.authenticate(data: responseData['user']);
@@ -120,7 +120,7 @@ class UserApiService extends NyApiService {
           // Store user token and data
           final responseData = response.data;
           if (responseData['key'] != null) {
-            await backpackSave('auth_token', responseData['key']);
+            await TokenSyncHelper.saveAuthToken(responseData['key']);
             if (responseData['user'] != null) {
               await storageSave("user", responseData['user']);
               await Auth.authenticate(data: responseData['user']);
@@ -237,7 +237,7 @@ class UserApiService extends NyApiService {
             // Store user token and data
             final responseData = response.data;
             if (responseData['key'] != null) {
-              await backpackSave('auth_token', responseData['key']);
+              await TokenSyncHelper.saveAuthToken(responseData['key']);
               if (responseData['user'] != null) {
                 await storageSave("user", responseData['user']);
                 await Auth.authenticate(data: responseData['user']);
@@ -662,6 +662,81 @@ class UserApiService extends NyApiService {
         handleFailure: (DioError dioError) {
           throw Exception("Failed to update profile: ${dioError.message}");
         });
+  }
+
+  Future<bool> recoverAuthenticationState() async {
+    try {
+      // Check if user is authenticated in framework but token is missing
+      bool isAuthenticated = await Auth.isAuthenticated();
+      final authToken = await backpackRead('auth_token');
+      final userData = await storageRead("user");
+
+      if (isAuthenticated && authToken == null && userData != null) {
+        NyLogger.info('Attempting to recover missing auth token...');
+
+        // Check if Auth.data() contains the token
+        final authData = await Auth.data();
+        if (authData != null) {
+          // Look for token in various possible keys
+          String? recoveredToken;
+
+          if (authData.containsKey('auth_token')) {
+            recoveredToken = authData['auth_token'];
+          } else if (authData.containsKey('token')) {
+            recoveredToken = authData['token'];
+          } else if (authData.containsKey('key')) {
+            recoveredToken = authData['key'];
+          }
+
+          if (recoveredToken != null) {
+            await backpackSave('auth_token', recoveredToken);
+            NyLogger.info('Successfully recovered auth token');
+            return true;
+          }
+        }
+
+        // If we can't recover the token, try to get a fresh one
+        // by calling getCurrentUser() which might work with session cookies
+        try {
+          final currentUser = await getCurrentUser();
+          if (currentUser != null) {
+            NyLogger.info('Successfully refreshed user session');
+            return true;
+          }
+        } catch (e) {
+          NyLogger.error('Failed to refresh user session: $e');
+        }
+      }
+
+      return false;
+    } catch (e) {
+      NyLogger.error('Error during auth state recovery: $e');
+      return false;
+    }
+  }
+
+  /// Check if authentication state is consistent
+  Future<bool> validateAuthenticationState() async {
+    try {
+      final isAuthenticated = await Auth.isAuthenticated();
+      final authToken = await backpackRead('auth_token');
+      final userData = await storageRead("user");
+
+      // All should be present and consistent
+      if (isAuthenticated && authToken != null && userData != null) {
+        return true;
+      }
+
+      // Try to recover if possible
+      if (isAuthenticated && authToken == null) {
+        return await recoverAuthenticationState();
+      }
+
+      return false;
+    } catch (e) {
+      NyLogger.error('Error validating auth state: $e');
+      return false;
+    }
   }
 
   /// Delete user account
