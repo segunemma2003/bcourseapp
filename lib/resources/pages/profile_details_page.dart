@@ -383,26 +383,32 @@ class _ProfileDetailsPageState extends NyPage<ProfileDetailsPage> {
         onRefresh: _loadUserData,
         child: afterLoad(
           loadingKey: 'fetch_profile_details',
-          child: () => SingleChildScrollView(
-            physics: AlwaysScrollableScrollPhysics(),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                SizedBox(height: 20),
-                // Form fields
-                _buildFormSection(),
+          child: () => afterLoad(
+            loadingKey: 'logout',
+            child: () => afterLoad(
+              loadingKey: 'delete_account',
+              child: () => SingleChildScrollView(
+                physics: AlwaysScrollableScrollPhysics(),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(height: 20),
+                    // Form fields
+                    _buildFormSection(),
 
-                // Save button with more spacing
-                SizedBox(height: 32),
-                _buildSaveButton(),
+                    // Save button with more spacing
+                    SizedBox(height: 32),
+                    _buildSaveButton(),
 
-                // Account options with more spacing
-                SizedBox(height: 48),
-                _buildAccountOptions(),
+                    // Account options with more spacing
+                    SizedBox(height: 48),
+                    _buildAccountOptions(),
 
-                // Debug section for development
-                if (getEnv('APP_DEBUG') == 'true') _buildDebugSection(),
-              ],
+                    // Debug section for development
+                    if (getEnv('APP_DEBUG') == 'true') _buildDebugSection(),
+                  ],
+                ),
+              ),
             ),
           ),
         ),

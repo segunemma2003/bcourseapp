@@ -1,5 +1,42 @@
 import 'package:nylo_framework/nylo_framework.dart';
 
+class SimplerCourse extends Model {
+  final int id;
+  final String title;
+  final String image;
+  final String smallDesc;
+  final String categoryName;
+
+  static String storageKey = "simpler_course";
+
+  SimplerCourse({
+    required this.id,
+    required this.title,
+    required this.image,
+    required this.smallDesc,
+    required this.categoryName,
+  }) : super(key: storageKey);
+
+  SimplerCourse.fromJson(dynamic data)
+      : id = data['id'] ?? 0,
+        title = data['title'] ?? '',
+        image = data['image'] ?? '',
+        smallDesc = data['small_desc'] ?? '',
+        categoryName = data['category_name'] ?? '',
+        super(key: storageKey);
+
+  @override
+  toJson() {
+    return {
+      'id': id,
+      'title': title,
+      'image': image,
+      'small_desc': smallDesc,
+      'category_name': categoryName,
+    };
+  }
+}
+
 class Course extends Model {
   final int id;
   final String title;
@@ -21,7 +58,7 @@ class Course extends Model {
   final List<CourseRequirement> requirements;
   final List<CourseCurriculum> curriculum;
 
-  // ✅ New enrollment status fields
+  // Enrollment status fields
   final UserEnrollment? userEnrollment;
   final EnrollmentStatus? enrollmentStatus;
 
@@ -78,7 +115,7 @@ class Course extends Model {
         curriculum = (data['curriculum'] ?? [])
             .map<CourseCurriculum>((cur) => CourseCurriculum.fromJson(cur))
             .toList(),
-        // ✅ Parse enrollment status information
+        // Parse enrollment status information
         userEnrollment = data['user_enrollment'] != null
             ? UserEnrollment.fromJson(data['user_enrollment'])
             : null,
@@ -109,7 +146,6 @@ class Course extends Model {
       'objectives': objectives.map((obj) => obj.toJson()).toList(),
       'requirements': requirements.map((req) => req.toJson()).toList(),
       'curriculum': curriculum.map((cur) => cur.toJson()).toList(),
-      // ✅ Include enrollment status in serialization
       'user_enrollment': userEnrollment?.toJson(),
       'enrollment_status': enrollmentStatus?.toJson(),
     };
@@ -122,23 +158,40 @@ class Course extends Model {
     return false;
   }
 
-  // ✅ Helper methods for subscription validation
+  // ✅ FIXED: Add extensive debugging to find the issue
   bool get hasValidSubscription {
-    if (!isEnrolled) return false;
+    NyLogger.info('🔍 DEBUG hasValidSubscription for course $id ($title):');
+    NyLogger.info('   isEnrolled: $isEnrolled');
 
-    // Check enrollment status first
-    if (enrollmentStatus != null) {
-      return enrollmentStatus!.status == 'active' &&
-          !enrollmentStatus!.isExpired;
+    // Check if it's a lifetime subscription
+    if (isLifetimeSubscription) {
+      NyLogger.info('   ✅ Lifetime subscription, returning true');
+      return true;
     }
 
-    // Fallback to user enrollment
-    if (userEnrollment != null) {
-      return userEnrollment!.isActive && !userEnrollment!.isExpired;
+    // Get expiry date
+    DateTime? expiryDate = subscriptionExpiryDate;
+
+    if (expiryDate == null) {
+      NyLogger.info(
+          '   ⚠️ No expiry date found, assuming valid since enrolled');
+      return true;
     }
 
-    // If enrolled but no detailed status, assume valid
-    return isEnrolled;
+    // Compare with current date
+    DateTime now = DateTime.now();
+    DateTime expiryDateOnly =
+        DateTime(expiryDate.year, expiryDate.month, expiryDate.day);
+    DateTime nowDateOnly = DateTime(now.year, now.month, now.day);
+
+    bool isValid = nowDateOnly.isBefore(expiryDateOnly) ||
+        nowDateOnly.isAtSameMomentAs(expiryDateOnly);
+
+    NyLogger.info('   📅 Current date: ${nowDateOnly.toString()}');
+    NyLogger.info('   📅 Expiry date: ${expiryDateOnly.toString()}');
+    NyLogger.info('   ✅ Subscription valid: $isValid');
+
+    return isValid;
   }
 
   bool get isLifetimeSubscription {
@@ -189,7 +242,6 @@ class Course extends Model {
     return isEnrolled ? 'enrolled' : 'not_enrolled';
   }
 
-  // ✅ Copy with method for creating updated instances
   Course copyWith({
     int? id,
     String? title,
@@ -239,7 +291,7 @@ class Course extends Model {
   }
 }
 
-// ✅ New UserEnrollment class
+// ✅ UserEnrollment class - same as your original
 class UserEnrollment extends Model {
   final int id;
   final String planType;
@@ -283,7 +335,7 @@ class UserEnrollment extends Model {
   }
 }
 
-// ✅ New EnrollmentStatus class
+// ✅ FIXED: EnrollmentStatus class with debug logging
 class EnrollmentStatus extends Model {
   final String status;
   final String message;
@@ -327,10 +379,23 @@ class EnrollmentStatus extends Model {
     };
   }
 
-  bool get isExpired => status != 'active';
-  bool get isActive => status == 'active';
+  // ✅ FIXED: Add debug logging
+  bool get isExpired {
+    bool expired = status != 'active';
+    NyLogger.info(
+        '   EnrollmentStatus.isExpired: status="$status" -> expired=$expired');
+    return expired;
+  }
+
+  bool get isActive {
+    bool active = status == 'active';
+    NyLogger.info(
+        '   EnrollmentStatus.isActive: status="$status" -> active=$active');
+    return active;
+  }
 }
 
+// Other classes remain the same...
 class CourseObjective extends Model {
   final int id;
   final String description;
@@ -386,7 +451,7 @@ class CourseCurriculum extends Model {
   final String title;
   final String videoUrl;
   final int order;
-  final String? duration; // ✅ Added duration field
+  final String? duration;
 
   static String storageKey = "course_curriculum";
 

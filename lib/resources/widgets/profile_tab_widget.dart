@@ -27,6 +27,9 @@ class _ProfileTabState extends NyState<ProfileTab> {
   bool _isAuthenticated = false;
   bool _isUploadingImage = false;
 
+  // Add overlay loading state for logout
+  bool _isLoggingOut = false;
+
   final UserApiService _userApiService = UserApiService();
   final ImagePicker _imagePicker = ImagePicker();
 
@@ -376,9 +379,11 @@ class _ProfileTabState extends NyState<ProfileTab> {
   void _logout() async {
     // Using Nylo's confirmAction for dialogs
     confirmAction(() async {
-      await lockRelease('logout', perform: () async {
-        setLoading(true, name: 'logout');
+      setState(() {
+        _isLoggingOut = true;
+      });
 
+      await lockRelease('logout', perform: () async {
         try {
           // Call API Service to logout
           await _userApiService.logout();
@@ -405,12 +410,13 @@ class _ProfileTabState extends NyState<ProfileTab> {
           // Show error toast
           showToastDanger(description: trans("Failed to logout"));
         } finally {
-          setLoading(false, name: 'logout');
+          setState(() {
+            _isLoggingOut = false;
+          });
         }
       });
     },
         title: trans("Logout"),
-        // description: trans("Are you sure you want to logout?"),
         confirmText: trans("Logout"),
         dismissText: trans("Cancel"));
   }
@@ -454,10 +460,69 @@ class _ProfileTabState extends NyState<ProfileTab> {
           ),
         ),
       ),
-      body: SafeArea(
-        child: afterLoad(
-          loadingKey: 'fetch_profile',
-          child: () => _buildAuthenticatedView(),
+      body: Stack(
+        children: [
+          // Main content
+          SafeArea(
+            child: afterLoad(
+              loadingKey: 'fetch_profile',
+              child: () => _buildAuthenticatedView(),
+            ),
+          ),
+
+          // Overlay loading for logout
+          if (_isLoggingOut) _buildOverlayLoading(trans("Logging out...")),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOverlayLoading(String message) {
+    return Container(
+      color: Colors.black.withOpacity(0.7),
+      child: Center(
+        child: Container(
+          margin: EdgeInsets.symmetric(horizontal: 40),
+          padding: EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.1),
+                blurRadius: 10,
+                offset: Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation<Color>(Colors.amber),
+                strokeWidth: 3,
+              ),
+              SizedBox(height: 16),
+              Text(
+                message,
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w500,
+                  color: Colors.black87,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              SizedBox(height: 4),
+              Text(
+                trans("Please wait..."),
+                style: TextStyle(
+                  fontSize: 14,
+                  color: Colors.grey.shade600,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
         ),
       ),
     );

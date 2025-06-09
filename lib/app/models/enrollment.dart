@@ -1,15 +1,19 @@
+import 'package:flutter_app/app/models/course.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 
 class Enrollment extends Model {
   final int id;
-  final int course;
-  final String dateEnrolled;
-  final String planType; // 'ONE_MONTH', 'THREE_MONTHS', 'LIFETIME'
+  final SimplerCourse course;
+  final DateTime dateEnrolled;
+  final String planType;
   final String planName;
-  final String? expiryDate; // Nullable for lifetime plans
-  final String amountPaid;
+  final DateTime? expiryDate;
+  final double amountPaid;
   final bool isActive;
   final bool isExpired;
+  final int? daysRemaining; // New field - nullable for lifetime plans
+  final int totalCurriculum; // New field
+  final int totalDuration; // New field in minutes
 
   static String storageKey = "enrollment";
 
@@ -28,43 +32,136 @@ class Enrollment extends Model {
     required this.amountPaid,
     this.isActive = true,
     this.isExpired = false,
+    this.daysRemaining,
+    required this.totalCurriculum,
+    required this.totalDuration,
   }) : super(key: storageKey);
 
   Enrollment.fromJson(dynamic data)
       : id = data['id'] ?? 0,
-        course = data['course']['id'] ?? 0,
-        dateEnrolled = data['date_enrolled'] ?? '',
+        course = SimplerCourse.fromJson(data['course'] ?? {}),
+        dateEnrolled = _parseDateTime(data['date_enrolled']),
         planType = data['plan_type'] ?? '',
         planName = data['plan_name'] ?? '',
-        expiryDate = data['expiry_date'],
-        amountPaid = data['amount_paid'] ?? '0',
-        isActive = data['is_active'] ?? false,
-        isExpired = data['is_expired'] ?? false,
+        expiryDate = data['expiry_date'] != null
+            ? _parseDateTime(data['expiry_date'])
+            : null,
+        amountPaid = _parseDouble(data['amount_paid']),
+        isActive = _parseBool(data['is_active']),
+        isExpired = _parseBool(data['is_expired']),
+        daysRemaining = data['days_remaining'], // Can be null for lifetime
+        totalCurriculum = data['total_curriculum'] ?? 0,
+        totalDuration = data['total_duration'] ?? 0,
         super(key: storageKey);
+
+  static DateTime _parseDateTime(dynamic value) {
+    if (value == null) return DateTime.now();
+    if (value is DateTime) return value;
+    if (value is String) {
+      return DateTime.tryParse(value) ?? DateTime.now();
+    }
+    return DateTime.now();
+  }
+
+  static double _parseDouble(dynamic value) {
+    if (value is double) return value;
+    if (value is int) return value.toDouble();
+    if (value is String) return double.tryParse(value) ?? 0.0;
+    return 0.0;
+  }
+
+  static bool _parseBool(dynamic value) {
+    if (value is bool) return value;
+    if (value is String) return value.toLowerCase() == 'true';
+    if (value is int) return value == 1;
+    return false;
+  }
 
   @override
   toJson() {
     return {
       'id': id,
-      'course': course,
-      'date_enrolled': dateEnrolled,
+      'course': course.toJson(),
+      'date_enrolled': dateEnrolled.toIso8601String(),
       'plan_type': planType,
       'plan_name': planName,
-      'expiry_date': expiryDate,
+      'expiry_date': expiryDate?.toIso8601String(),
       'amount_paid': amountPaid,
       'is_active': isActive,
       'is_expired': isExpired,
+      'days_remaining': daysRemaining,
+      'total_curriculum': totalCurriculum,
+      'total_duration': totalDuration,
     };
   }
 
-  // Helper method to check if subscription is valid
+  // ✅ Enhanced validation method - now uses API-provided fields
   bool get isValid {
-    if (planType == PLAN_TYPE_LIFETIME)
-      return true; // Lifetime plans never expire
-    if (expiryDate == null) return false;
+    NyLogger.info(
+        '🔍 Checking enrollment validity for course ${course.id} (${course.title}):');
+    NyLogger.info('   Plan Type: $planType');
+    NyLogger.info('   Is Active: $isActive');
+    NyLogger.info('   Is Expired: $isExpired');
+    NyLogger.info('   Days Remaining: $daysRemaining');
 
-    DateTime expiry = DateTime.parse(expiryDate!);
-    return expiry.isAfter(DateTime.now());
+    // First check if enrollment is active and not expired
+    if (!isActive || isExpired) {
+      NyLogger.info('   ❌ Enrollment is inactive or expired');
+      return false;
+    }
+
+    // For lifetime plans
+    if (planType == PLAN_TYPE_LIFETIME) {
+      NyLogger.info('   ✅ Lifetime plan - valid');
+      return true;
+    }
+
+    // For time-based plans, use API-provided days_remaining
+    if (daysRemaining == null || daysRemaining! <= 0) {
+      NyLogger.info('   ❌ No days remaining or expired');
+      return false;
+    }
+
+    NyLogger.info('   ✅ ${daysRemaining} days remaining - valid');
+    return true;
+  }
+
+  // Additional helper methods
+  bool get isLifetimePlan => planType == PLAN_TYPE_LIFETIME;
+
+  bool get isOneMonthPlan => planType == PLAN_TYPE_ONE_MONTH;
+
+  bool get isThreeMonthPlan => planType == PLAN_TYPE_THREE_MONTHS;
+
+  // Get subscription status as a readable string
+  String get subscriptionStatus {
+    if (!isActive) return 'Inactive';
+    if (isExpired) return 'Expired';
+    if (planType == PLAN_TYPE_LIFETIME) return 'Lifetime Active';
+
+    if (daysRemaining == null || daysRemaining! <= 0) return 'Expired';
+    if (daysRemaining! <= 7) return 'Expiring Soon (${daysRemaining} days)';
+
+    return 'Active (${daysRemaining} days remaining)';
+  }
+
+  // Format total duration as readable string
+  String get formattedDuration {
+    if (totalDuration <= 0) return 'N/A';
+
+    int hours = totalDuration ~/ 60;
+    int minutes = totalDuration % 60;
+
+    if (hours > 0) {
+      return minutes > 0 ? '${hours}h ${minutes}m' : '${hours}h';
+    } else {
+      return '${minutes}m';
+    }
+  }
+
+  // Get curriculum info as readable string
+  String get curriculumInfo {
+    return '$totalCurriculum lessons • ${formattedDuration}';
   }
 }
 
@@ -182,5 +279,161 @@ class UserSubscription extends Model {
       'is_active': isActive,
       'is_expired': isExpired,
     };
+  }
+}
+
+class EnrollmentDetails extends Model {
+  final int id;
+  final Course course;
+  final DateTime dateEnrolled;
+  final String planType;
+  final String planName;
+  final DateTime? expiryDate;
+  final double amountPaid;
+  final bool isActive;
+  final bool isExpired;
+
+  static String storageKey = "enrollment_details";
+
+  // Define constants for plan types
+  static const String PLAN_TYPE_ONE_MONTH = 'ONE_MONTH';
+  static const String PLAN_TYPE_THREE_MONTHS = 'THREE_MONTHS';
+  static const String PLAN_TYPE_LIFETIME = 'LIFETIME';
+
+  EnrollmentDetails({
+    required this.id,
+    required this.course,
+    required this.dateEnrolled,
+    required this.planType,
+    required this.planName,
+    this.expiryDate,
+    required this.amountPaid,
+    this.isActive = true,
+    this.isExpired = false,
+  }) : super(key: storageKey);
+
+  EnrollmentDetails.fromJson(dynamic data)
+      : id = data['id'] ?? 0,
+        course = Course.fromJson(data['course'] ?? {}),
+        dateEnrolled = _parseDateTime(data['date_enrolled']),
+        planType = data['plan_type'] ?? '',
+        planName = data['plan_name'] ?? '',
+        expiryDate = data['expiry_date'] != null
+            ? _parseDateTime(data['expiry_date'])
+            : null,
+        amountPaid = _parseDouble(data['amount_paid']),
+        isActive = _parseBool(data['is_active']),
+        isExpired = _parseBool(data['is_expired']),
+        super(key: storageKey);
+
+  static DateTime _parseDateTime(dynamic value) {
+    if (value == null) return DateTime.now();
+    if (value is DateTime) return value;
+    if (value is String) {
+      return DateTime.tryParse(value) ?? DateTime.now();
+    }
+    return DateTime.now();
+  }
+
+  static double _parseDouble(dynamic value) {
+    if (value is double) return value;
+    if (value is int) return value.toDouble();
+    if (value is String) return double.tryParse(value) ?? 0.0;
+    return 0.0;
+  }
+
+  static bool _parseBool(dynamic value) {
+    if (value is bool) return value;
+    if (value is String) return value.toLowerCase() == 'true';
+    if (value is int) return value == 1;
+    return false;
+  }
+
+  @override
+  toJson() {
+    return {
+      'id': id,
+      'course': course.toJson(),
+      'date_enrolled': dateEnrolled.toIso8601String(),
+      'plan_type': planType,
+      'plan_name': planName,
+      'expiry_date': expiryDate?.toIso8601String(),
+      'amount_paid': amountPaid,
+      'is_active': isActive,
+      'is_expired': isExpired,
+    };
+  }
+
+  bool get isValid {
+    NyLogger.info(
+        '🔍 Checking enrollment validity for course ${course.id} (${course.title}):');
+    NyLogger.info('   Plan Type: $planType');
+    NyLogger.info('   Is Active: $isActive');
+    NyLogger.info('   Is Expired: $isExpired');
+
+    // First check if enrollment is active and not expired
+    if (!isActive || isExpired) {
+      NyLogger.info('   ❌ Enrollment is inactive or expired');
+      return false;
+    }
+
+    // For lifetime plans
+    if (planType == PLAN_TYPE_LIFETIME) {
+      NyLogger.info('   ✅ Lifetime plan - valid');
+      return true;
+    }
+
+    // For time-based plans, check expiry date
+    if (expiryDate == null) {
+      NyLogger.info(
+          '   ⚠️ No expiry date for non-lifetime plan - assuming invalid');
+      return false;
+    }
+
+    DateTime now = DateTime.now();
+    DateTime expiryDateOnly =
+        DateTime(expiryDate!.year, expiryDate!.month, expiryDate!.day);
+    DateTime nowDateOnly = DateTime(now.year, now.month, now.day);
+
+    bool isValidDate = nowDateOnly.isBefore(expiryDateOnly) ||
+        nowDateOnly.isAtSameMomentAs(expiryDateOnly);
+
+    NyLogger.info('   📅 Current date: ${nowDateOnly.toString()}');
+    NyLogger.info('   📅 Expiry date: ${expiryDateOnly.toString()}');
+    NyLogger.info('   ✅ Date validation: $isValidDate');
+
+    return isValidDate;
+  }
+
+  // Additional helper methods
+  bool get isLifetimePlan => planType == PLAN_TYPE_LIFETIME;
+
+  bool get isOneMonthPlan => planType == PLAN_TYPE_ONE_MONTH;
+
+  bool get isThreeMonthPlan => planType == PLAN_TYPE_THREE_MONTHS;
+
+  // Get days remaining for subscription
+  int? get daysRemaining {
+    if (planType == PLAN_TYPE_LIFETIME) return null; // Lifetime has no expiry
+    if (expiryDate == null) return 0;
+
+    DateTime now = DateTime.now();
+    if (expiryDate!.isBefore(now)) return 0;
+
+    return expiryDate!.difference(now).inDays;
+  }
+
+  // Get subscription status as a readable string
+  String get subscriptionStatus {
+    if (!isActive) return 'Inactive';
+    if (isExpired) return 'Expired';
+    if (planType == PLAN_TYPE_LIFETIME) return 'Lifetime Active';
+
+    int? days = daysRemaining;
+    if (days == null) return 'Active';
+    if (days <= 0) return 'Expired';
+    if (days <= 7) return 'Expiring Soon ($days days)';
+
+    return 'Active ($days days remaining)';
   }
 }

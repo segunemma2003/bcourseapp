@@ -1,9 +1,12 @@
+import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:nylo_framework/nylo_framework.dart';
+
+import '../services/video_service.dart';
 
 /// Central cache invalidation manager to coordinate cache clearing across services
 /// Call this after major user actions like payments, enrollments, profile updates, etc.
 class CacheInvalidationManager {
-  /// Invalidate all caches after user login
+  /// ✅ FIXED: Invalidate all caches after user login
   static Future<void> onUserLogin() async {
     try {
       // Clear all user-specific caches to ensure fresh data
@@ -22,16 +25,31 @@ class CacheInvalidationManager {
         cache().clear('purchase_history'),
       ]);
 
+      // ✅ IMPORTANT: Handle user login for VideoService
+      await VideoService().handleUserLogin();
+
       NyLogger.info('User login cache invalidation completed');
-    } catch (e) {
+    } catch (e, stackTrace) {
       NyLogger.error('Error during user login cache invalidation: $e');
+
+      // 🔥 ADD: Report to Crashlytics
+      try {
+        FirebaseCrashlytics.instance.recordError(
+          Exception('User login cache invalidation failed: $e'),
+          stackTrace,
+          fatal: false,
+        );
+      } catch (_) {}
     }
   }
 
-  /// Invalidate all caches after user logout
+  /// ✅ FIXED: Invalidate all caches after user logout
   static Future<void> onUserLogout() async {
     try {
-      // Clear all user-specific caches
+      // ✅ IMPORTANT: Handle VideoService logout FIRST (to save state)
+      await VideoService().handleUserLogout();
+
+      // Then clear all user-specific caches
       await Future.wait([
         // Course-related caches
         cache().clear('enrolled_courses'),
@@ -52,12 +70,21 @@ class CacheInvalidationManager {
       ]);
 
       NyLogger.info('User logout cache invalidation completed');
-    } catch (e) {
+    } catch (e, stackTrace) {
       NyLogger.error('Error during user logout cache invalidation: $e');
+
+      // 🔥 ADD: Report to Crashlytics
+      try {
+        FirebaseCrashlytics.instance.recordError(
+          Exception('User logout cache invalidation failed: $e'),
+          stackTrace,
+          fatal: false,
+        );
+      } catch (_) {}
     }
   }
 
-  /// Invalidate caches after course purchase
+  /// ✅ FIXED: Invalidate caches after course purchase
   static Future<void> onCoursePurchase(int courseId) async {
     try {
       await Future.wait([
@@ -73,14 +100,27 @@ class CacheInvalidationManager {
             .clear('user_subscriptions'), // In case subscription was involved
       ]);
 
+      // ✅ FIXED: Refresh user login state to get updated enrollment data
+      await VideoService().handleUserLogin();
+
       NyLogger.info(
           'Course purchase cache invalidation completed for course $courseId');
-    } catch (e) {
+    } catch (e, stackTrace) {
       NyLogger.error('Error during course purchase cache invalidation: $e');
+
+      // 🔥 ADD: Report to Crashlytics
+      try {
+        FirebaseCrashlytics.instance.recordError(
+          Exception('Course purchase cache invalidation failed: $e'),
+          stackTrace,
+          fatal: false,
+        );
+        FirebaseCrashlytics.instance.setCustomKey('course_id', courseId);
+      } catch (_) {}
     }
   }
 
-  /// Invalidate caches after course enrollment (free courses)
+  /// ✅ FIXED: Invalidate caches after course enrollment (free courses)
   static Future<void> onCourseEnrollment(int courseId) async {
     try {
       await Future.wait([
@@ -89,14 +129,27 @@ class CacheInvalidationManager {
         cache().clear('course_complete_details_$courseId'),
       ]);
 
+      // ✅ ADD: Refresh VideoService to recognize new enrollment
+      await VideoService().handleUserLogin();
+
       NyLogger.info(
           'Course enrollment cache invalidation completed for course $courseId');
-    } catch (e) {
+    } catch (e, stackTrace) {
       NyLogger.error('Error during course enrollment cache invalidation: $e');
+
+      // 🔥 ADD: Report to Crashlytics
+      try {
+        FirebaseCrashlytics.instance.recordError(
+          Exception('Course enrollment cache invalidation failed: $e'),
+          stackTrace,
+          fatal: false,
+        );
+        FirebaseCrashlytics.instance.setCustomKey('course_id', courseId);
+      } catch (_) {}
     }
   }
 
-  /// Invalidate caches after subscription purchase/cancellation
+  /// ✅ FIXED: Invalidate caches after subscription purchase/cancellation
   static Future<void> onSubscriptionChange() async {
     try {
       await Future.wait([
@@ -106,9 +159,55 @@ class CacheInvalidationManager {
             'enrolled_courses'), // Subscription might affect course access
       ]);
 
+      // ✅ ADD: Refresh VideoService to recognize subscription changes
+      await VideoService().handleUserLogin();
+
       NyLogger.info('Subscription change cache invalidation completed');
-    } catch (e) {
+    } catch (e, stackTrace) {
       NyLogger.error('Error during subscription change cache invalidation: $e');
+
+      // 🔥 ADD: Report to Crashlytics
+      try {
+        FirebaseCrashlytics.instance.recordError(
+          Exception('Subscription change cache invalidation failed: $e'),
+          stackTrace,
+          fatal: false,
+        );
+      } catch (_) {}
+    }
+  }
+
+  /// 🆕 BONUS: Invalidate caches after subscription renewal
+  static Future<void> onSubscriptionRenewal(int courseId) async {
+    try {
+      await Future.wait([
+        // Course-related caches
+        cache().clear('enrolled_courses'),
+        cache().clear('course_details_$courseId'),
+        cache().clear('course_complete_details_$courseId'),
+
+        // Subscription-related caches
+        cache().clear('user_subscriptions'),
+        cache().clear('purchase_history'),
+      ]);
+
+      // Refresh user login state to get updated subscription info
+      await VideoService().handleUserLogin();
+
+      NyLogger.info(
+          'Subscription renewal cache invalidation completed for course $courseId');
+    } catch (e, stackTrace) {
+      NyLogger.error(
+          'Error during subscription renewal cache invalidation: $e');
+
+      try {
+        FirebaseCrashlytics.instance.recordError(
+          Exception('Subscription renewal cache invalidation failed: $e'),
+          stackTrace,
+          fatal: false,
+        );
+        FirebaseCrashlytics.instance.setCustomKey('course_id', courseId);
+      } catch (_) {}
     }
   }
 
@@ -118,8 +217,17 @@ class CacheInvalidationManager {
       await cache().clear('payment_cards');
 
       NyLogger.info('Payment method change cache invalidation completed');
-    } catch (e) {
+    } catch (e, stackTrace) {
       NyLogger.error('Error during payment method cache invalidation: $e');
+
+      // 🔥 ADD: Report to Crashlytics
+      try {
+        FirebaseCrashlytics.instance.recordError(
+          Exception('Payment method cache invalidation failed: $e'),
+          stackTrace,
+          fatal: false,
+        );
+      } catch (_) {}
     }
   }
 
@@ -129,8 +237,17 @@ class CacheInvalidationManager {
       await cache().clear('wishlist');
 
       NyLogger.info('Wishlist change cache invalidation completed');
-    } catch (e) {
+    } catch (e, stackTrace) {
       NyLogger.error('Error during wishlist cache invalidation: $e');
+
+      // 🔥 ADD: Report to Crashlytics
+      try {
+        FirebaseCrashlytics.instance.recordError(
+          Exception('Wishlist cache invalidation failed: $e'),
+          stackTrace,
+          fatal: false,
+        );
+      } catch (_) {}
     }
   }
 
@@ -143,8 +260,17 @@ class CacheInvalidationManager {
       ]);
 
       NyLogger.info('Notification action cache invalidation completed');
-    } catch (e) {
+    } catch (e, stackTrace) {
       NyLogger.error('Error during notification cache invalidation: $e');
+
+      // 🔥 ADD: Report to Crashlytics
+      try {
+        FirebaseCrashlytics.instance.recordError(
+          Exception('Notification cache invalidation failed: $e'),
+          stackTrace,
+          fatal: false,
+        );
+      } catch (_) {}
     }
   }
 
@@ -158,8 +284,17 @@ class CacheInvalidationManager {
       ]);
 
       NyLogger.info('Profile update cache invalidation completed');
-    } catch (e) {
+    } catch (e, stackTrace) {
       NyLogger.error('Error during profile update cache invalidation: $e');
+
+      // 🔥 ADD: Report to Crashlytics
+      try {
+        FirebaseCrashlytics.instance.recordError(
+          Exception('Profile update cache invalidation failed: $e'),
+          stackTrace,
+          fatal: false,
+        );
+      } catch (_) {}
     }
   }
 
@@ -181,9 +316,21 @@ class CacheInvalidationManager {
         cache().clear('purchase_history'),
       ]);
 
+      // ✅ ADD: Refresh VideoService after force refresh
+      await VideoService().handleUserLogin();
+
       NyLogger.info('Force refresh of all user data completed');
-    } catch (e) {
+    } catch (e, stackTrace) {
       NyLogger.error('Error during force refresh of user data: $e');
+
+      // 🔥 ADD: Report to Crashlytics
+      try {
+        FirebaseCrashlytics.instance.recordError(
+          Exception('Force refresh user data failed: $e'),
+          stackTrace,
+          fatal: false,
+        );
+      } catch (_) {}
     }
   }
 
@@ -207,8 +354,17 @@ class CacheInvalidationManager {
       ]);
 
       NyLogger.info('Static data cache invalidation completed');
-    } catch (e) {
+    } catch (e, stackTrace) {
       NyLogger.error('Error during static data cache invalidation: $e');
+
+      // 🔥 ADD: Report to Crashlytics
+      try {
+        FirebaseCrashlytics.instance.recordError(
+          Exception('Static data cache invalidation failed: $e'),
+          stackTrace,
+          fatal: false,
+        );
+      } catch (_) {}
     }
   }
 
@@ -219,8 +375,17 @@ class CacheInvalidationManager {
       // implement custom cleanup logic here if needed
 
       NyLogger.info('Cache cleanup completed');
-    } catch (e) {
+    } catch (e, stackTrace) {
       NyLogger.error('Error during cache cleanup: $e');
+
+      // 🔥 ADD: Report to Crashlytics
+      try {
+        FirebaseCrashlytics.instance.recordError(
+          Exception('Cache cleanup failed: $e'),
+          stackTrace,
+          fatal: false,
+        );
+      } catch (_) {}
     }
   }
 
@@ -262,8 +427,18 @@ class CacheInvalidationManager {
         'total_cached': cacheStatus.values.where((v) => v).length,
         'total_possible': cacheKeys.length,
       };
-    } catch (e) {
+    } catch (e, stackTrace) {
       NyLogger.error('Error getting cache info: $e');
+
+      // 🔥 ADD: Report to Crashlytics
+      try {
+        FirebaseCrashlytics.instance.recordError(
+          Exception('Get cache info failed: $e'),
+          stackTrace,
+          fatal: false,
+        );
+      } catch (_) {}
+
       return {'error': e.toString()};
     }
   }
@@ -286,8 +461,18 @@ class CacheInvalidationManager {
 
       NyLogger.info(
           'Course data update cache invalidation completed for course $courseId');
-    } catch (e) {
+    } catch (e, stackTrace) {
       NyLogger.error('Error during course data update cache invalidation: $e');
+
+      // 🔥 ADD: Report to Crashlytics
+      try {
+        FirebaseCrashlytics.instance.recordError(
+          Exception('Course data update cache invalidation failed: $e'),
+          stackTrace,
+          fatal: false,
+        );
+        FirebaseCrashlytics.instance.setCustomKey('course_id', courseId);
+      } catch (_) {}
     }
   }
 
@@ -308,19 +493,54 @@ class CacheInvalidationManager {
       ]);
 
       NyLogger.info('Category data update cache invalidation completed');
-    } catch (e) {
+    } catch (e, stackTrace) {
       NyLogger.error(
           'Error during category data update cache invalidation: $e');
+
+      // 🔥 ADD: Report to Crashlytics
+      try {
+        FirebaseCrashlytics.instance.recordError(
+          Exception('Category data update cache invalidation failed: $e'),
+          stackTrace,
+          fatal: false,
+        );
+        if (categoryId != null) {
+          FirebaseCrashlytics.instance.setCustomKey('category_id', categoryId);
+        }
+      } catch (_) {}
     }
   }
 
   /// Emergency cache flush (nuclear option - use only in critical situations)
   static Future<void> emergencyFlushAllCaches() async {
     try {
+      // ✅ IMPORTANT: Handle VideoService logout first to save state
+      await VideoService().handleUserLogout();
+
+      // Then flush all caches
       await cache().flush();
+
       NyLogger.error('EMERGENCY: All caches have been flushed');
-    } catch (e) {
+
+      // 🔥 ADD: Report emergency action to Crashlytics
+      try {
+        FirebaseCrashlytics.instance.recordError(
+          Exception('Emergency cache flush executed'),
+          StackTrace.current,
+          fatal: false,
+        );
+      } catch (_) {}
+    } catch (e, stackTrace) {
       NyLogger.error('Error during emergency cache flush: $e');
+
+      // 🔥 ADD: Report to Crashlytics
+      try {
+        FirebaseCrashlytics.instance.recordError(
+          Exception('Emergency cache flush failed: $e'),
+          stackTrace,
+          fatal: true, // This is critical
+        );
+      } catch (_) {}
     }
   }
 }

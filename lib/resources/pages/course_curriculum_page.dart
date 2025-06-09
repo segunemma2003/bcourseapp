@@ -29,14 +29,15 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
   String totalDuration = "";
   int startIndex = 0;
 
-  bool _hasValidSubscription = false;
-  bool _isLifetimeSubscription = false;
-  DateTime? _subscriptionExpiryDate;
-  String _subscriptionStatus = 'not_enrolled';
-  String _subscriptionPlanName = 'Unknown';
+  // ❌ REMOVED: All subscription validation variables
+  // bool _hasValidSubscription = false;
+  // bool _isLifetimeSubscription = false;
+  // DateTime? _subscriptionExpiryDate;
+  // String _subscriptionStatus = 'not_enrolled';
+  // String _subscriptionPlanName = 'Unknown';
+  // Timer? _subscriptionCheckTimer;
+  // bool _showExpiredBanner = false;
 
-// ✅ Subscription validation timer
-  Timer? _subscriptionCheckTimer;
   // Download status tracking
   Map<int, bool> _downloadingStatus = {};
   Map<int, bool> _downloadedStatus = {};
@@ -65,7 +66,6 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
 
   // User information
   String _username = "User";
-  bool _showExpiredBanner = false;
   String _email = "";
 
   // Scroll controller for the ListView
@@ -74,167 +74,14 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
   // Bottom sheet controller
   PersistentBottomSheetController? _bottomSheetController;
 
-  void _extractSubscriptionDetails() {
-    if (course == null) return;
-
-    _hasValidSubscription = course!.hasValidSubscription;
-    _isLifetimeSubscription = course!.isLifetimeSubscription;
-    _subscriptionExpiryDate = course!.subscriptionExpiryDate;
-    _subscriptionStatus = course!.subscriptionStatus;
-    _subscriptionPlanName = course!.subscriptionPlanName;
-  }
-
-  Future<void> _validateSubscriptionStatus() async {
-    if (course == null) return;
-
-    try {
-      // Get fresh course data with enrollment details
-      Course updatedCourse =
-          await CourseApiService().getCourseWithEnrollmentDetails(course!.id);
-
-      if (mounted) {
-        bool wasValid = _hasValidSubscription;
-
-        setState(() {
-          course = updatedCourse;
-          _extractSubscriptionDetails();
-        });
-
-        // If subscription became invalid, show banner
-        if (wasValid && !_hasValidSubscription) {
-          setState(() {
-            _showExpiredBanner = true;
-          });
-          _showSubscriptionExpiredDialog();
-        }
-        // If subscription became valid, hide banner
-        else if (!wasValid && _hasValidSubscription) {
-          setState(() {
-            _showExpiredBanner = false;
-          });
-        }
-      }
-    } catch (e) {
-      NyLogger.error('Error validating subscription status: $e');
-      // Continue with existing data if validation fails
-    }
-  }
-
-  void _showSubscriptionExpiredDialog() {
-    if (!mounted) return;
-
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Text(trans("Subscription Expired")),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(trans("Your subscription to this course has expired.")),
-              SizedBox(height: 8),
-              // ✅ Use course model data directly
-              if (course?.subscriptionExpiryDate != null)
-                Text(
-                  trans(
-                      "Expired on: ${course!.subscriptionExpiryDate!.day}/${course!.subscriptionExpiryDate!.month}/${course!.subscriptionExpiryDate!.year}"),
-                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                ),
-              SizedBox(height: 8),
-              Text(trans(
-                  "Please renew your subscription to continue accessing the course content.")),
-            ],
-          ),
-          actions: [
-            TextButton(
-              child: Text(trans("Later")),
-              onPressed: () => Navigator.pop(context),
-            ),
-            TextButton(
-              child: Text(trans("Renew Now")),
-              style: TextButton.styleFrom(foregroundColor: Colors.amber),
-              onPressed: () {
-                Navigator.pop(context);
-                _handleSubscriptionRenewal();
-              },
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  void _handleSubscriptionRenewal() {
-    routeTo(EnrollmentPlanPage.path, data: {
-      'course': course,
-      'curriculum': curriculumItems,
-      'isRenewal': true,
-    });
-  }
-
-//  Show subscription required dialog
-  void _showSubscriptionRequiredDialog() {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Text(trans("Valid Subscription Required")),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(trans(
-                  "A valid subscription is required to download and access course content.")),
-              SizedBox(height: 8),
-              // ✅ Use course model data directly
-              if (course?.subscriptionExpiryDate != null)
-                Text(
-                  trans(
-                      "Your subscription expired on: ${course!.subscriptionExpiryDate!.day}/${course!.subscriptionExpiryDate!.month}/${course!.subscriptionExpiryDate!.year}"),
-                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                ),
-              SizedBox(height: 8),
-              Text(trans("Please renew your subscription to continue.")),
-            ],
-          ),
-          actions: [
-            TextButton(
-              child: Text(trans("Cancel")),
-              onPressed: () => Navigator.pop(context),
-            ),
-            TextButton(
-              child: Text(trans("Renew Subscription")),
-              style: TextButton.styleFrom(foregroundColor: Colors.amber),
-              onPressed: () {
-                Navigator.pop(context);
-                _handleSubscriptionRenewal();
-              },
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  void _setupSubscriptionValidation() {
-    _subscriptionCheckTimer = Timer.periodic(Duration(minutes: 5), (timer) {
-      if (mounted && course != null) {
-        _validateSubscriptionStatus();
-      }
-    });
-  }
-
-  Future<bool> _validateSubscriptionForDownload() async {
-    if (course == null) return false;
-
-    if (!course!.hasValidSubscription) {
-      _showSubscriptionRequiredDialog();
-      return false;
-    }
-
-    return true;
-  }
+  // ❌ REMOVED: All subscription validation methods
+  // void _extractSubscriptionDetails() { ... }
+  // Future<void> _validateSubscriptionStatus() async { ... }
+  // void _showSubscriptionExpiredDialog() { ... }
+  // void _handleSubscriptionRenewal() { ... }
+  // void _showSubscriptionRequiredDialog() { ... }
+  // void _setupSubscriptionValidation() { ... }
+  // Future<bool> _validateSubscriptionForDownload() async { ... }
 
   @override
   void initState() {
@@ -320,7 +167,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
 
     // Initialize network preferences
     _loadNetworkPreferences();
-    // _setupSubscriptionValidation();
+    // ❌ REMOVED: _setupSubscriptionValidation();
   }
 
   void _handlePermissionRequired() {
@@ -407,19 +254,19 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
           if (pageData.containsKey('course') && pageData['course'] != null) {
             course = pageData['course'];
             courseName = course?.title ?? "Course Curriculum";
-            _extractSubscriptionDetails();
+            // ❌ REMOVED: _extractSubscriptionDetails();
           } else {
             courseName = "Course Curriculum";
           }
 
-          if (course != null) {
-            // Show expired banner if subscription is not valid
-            if (!_hasValidSubscription) {
-              setState(() {
-                _showExpiredBanner = true;
-              });
-            }
-          }
+          // ❌ REMOVED: Subscription expiry banner logic
+          // if (course != null) {
+          //   if (!_hasValidSubscription) {
+          //     setState(() {
+          //       _showExpiredBanner = true;
+          //     });
+          //   }
+          // }
 
           // Extract curriculum items
           if (pageData.containsKey('curriculum') &&
@@ -1002,7 +849,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
     _scrollController.dispose();
     // Close bottom sheet if open
     _bottomSheetController?.close();
-    // _subscriptionCheckTimer?.cancel();
+    // ❌ REMOVED: _subscriptionCheckTimer?.cancel();
 
     _downloadProgressSubscription?.cancel();
 
@@ -1126,21 +973,23 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
     }
   }
 
-  // Improved _downloadVideo method with better error handling and background processing
+  // ✅ SIMPLIFIED: Removed subscription validation
   Future<void> _downloadVideo(int index, {bool isRedownload = false}) async {
     if (course == null) return;
-    if (!await _validateSubscriptionForDownload()) {
-      return;
-    }
+
+    // ❌ REMOVED: Subscription validation
+    // if (!await _validateSubscriptionForDownload()) {
+    //   return;
+    // }
+
     try {
-      // IMPORTANT: Reset error state immediately to allow retry
+      // Check permissions
       bool hasPermission =
           await _videoService.checkAndRequestStoragePermissions();
       if (!hasPermission) {
-        // Permission was denied, the error dialog will be shown via the stream
-        // No need to show additional error here
         return;
       }
+
       setState(() {
         _statusMessages[index] = "";
       });
@@ -1150,9 +999,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
       final String videoIdStr = index.toString();
 
       // Reset status in VideoService to ensure clean state
-      // This is critical when retrying after a failed download
       if (isRedownload) {
-        // If explicitly redownloading, we need to delete the file
         await _videoService.deleteVideo(
           courseId: courseIdStr,
           videoId: videoIdStr,
@@ -1185,7 +1032,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
           return;
         }
 
-        // If there was a previous error, we need to cancel the download first to reset state
+        // If there was a previous error, cancel the download first to reset state
         await _videoService.cancelDownload(
           courseId: courseIdStr,
           videoId: videoIdStr,
@@ -1228,8 +1075,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
         _downloadingStatus[index] = false;
         _watermarkingStatus[index] = false;
         _queuedStatus[index] = true;
-        _downloadedStatus[index] =
-            false; // Make sure it's not marked as downloaded
+        _downloadedStatus[index] = false;
         _statusMessages[index] = "Preparing to download...";
       });
 
@@ -1276,8 +1122,6 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
               // Successfully queued
               NyLogger.info(
                   'Successfully queued download for video $videoIdStr in course $courseIdStr');
-
-              // No need to update state here, progress updates will come from the service
             }
           }
         } catch (e) {
@@ -1332,11 +1176,14 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
     }
   }
 
+  // ✅ SIMPLIFIED: Removed subscription validation
   Future<void> _playVideo(int index) async {
     if (course == null) return;
-    if (!await _validateSubscriptionForDownload()) {
-      return;
-    }
+
+    // ❌ REMOVED: Subscription validation
+    // if (!await _validateSubscriptionForDownload()) {
+    //   return;
+    // }
 
     var item = curriculumItems[index];
     bool isDownloaded = _downloadedStatus[index] ?? false;
@@ -1387,12 +1234,14 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
     }
   }
 
-  // Handle video tap with improved status handling
+  // ✅ SIMPLIFIED: Removed subscription validation from video tap handler
   void _handleVideoTap(int index) {
-    if (!_hasValidSubscription) {
-      _showSubscriptionRequiredDialog();
-      return;
-    }
+    // ❌ REMOVED: Subscription validation
+    // if (!_hasValidSubscription) {
+    //   _showSubscriptionRequiredDialog();
+    //   return;
+    // }
+
     bool isDownloaded = _downloadedStatus[index] ?? false;
     bool isDownloading = _downloadingStatus[index] ?? false;
     bool isWatermarking = _watermarkingStatus[index] ?? false;
@@ -1477,7 +1326,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
     );
   }
 
-// Show options for queued videos
+  // Show options for queued videos
   void _showQueuedOptions(int index) {
     showModalBottomSheet(
       context: context,
@@ -1985,7 +1834,8 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
       ),
       body: Column(
         children: [
-          if (_showExpiredBanner) _buildExpiredSubscriptionBanner(),
+          // ❌ REMOVED: Expired subscription banner
+          // if (_showExpiredBanner) _buildExpiredSubscriptionBanner(),
           if (!_isOnline)
             Container(
               width: double.infinity,
@@ -2017,14 +1867,12 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
                         ? _buildEmptyState()
                         : SingleChildScrollView(
                             controller: _scrollController,
-                            physics:
-                                AlwaysScrollableScrollPhysics(), // Ensures always scrollable
+                            physics: AlwaysScrollableScrollPhysics(),
                             child: Column(
                               children: [
                                 ListView.separated(
                                   shrinkWrap: true,
-                                  physics:
-                                      NeverScrollableScrollPhysics(), // Disable scrolling of inner ListView
+                                  physics: NeverScrollableScrollPhysics(),
                                   padding: EdgeInsets.zero,
                                   itemCount: curriculumItems.length,
                                   separatorBuilder: (context, index) => Divider(
@@ -2101,8 +1949,6 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
       child: Icon(iconData, color: iconColor, size: 20),
     );
   }
-
-// Then in your AppBar actions array:
 
   Widget _buildEmptyState() {
     return Center(
@@ -2350,54 +2196,6 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
     );
   }
 
-  Widget _buildExpiredSubscriptionBanner() {
-    return Container(
-      width: double.infinity,
-      color: Colors.red.shade50,
-      padding: EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.error_outline, color: Colors.red, size: 18),
-              SizedBox(width: 8),
-              Text(
-                trans("Subscription Expired"),
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: Colors.red,
-                  fontSize: 14,
-                ),
-              ),
-            ],
-          ),
-          SizedBox(height: 4),
-          Text(
-            trans(
-                "Your subscription has expired. Please renew to continue accessing the course."),
-            style: TextStyle(fontSize: 12),
-          ),
-          SizedBox(height: 8),
-          ElevatedButton(
-            onPressed: () {
-              // Navigate to renewal page
-              routeTo(EnrollmentPlanPage.path, data: {
-                'course': course,
-                'curriculum': curriculumItems,
-                'isRenewal': true
-              });
-            },
-            child: Text(trans("Renew Subscription")),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              textStyle: TextStyle(fontSize: 12),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  // ❌ REMOVED: _buildExpiredSubscriptionBanner method
+  // Widget _buildExpiredSubscriptionBanner() { ... }
 }

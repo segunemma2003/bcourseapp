@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_app/resources/pages/course_detail_page.dart';
 import 'package:flutter_app/resources/pages/purchased_course_detail_page.dart';
@@ -5,6 +7,7 @@ import 'package:flutter_app/resources/pages/signin_page.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 
 import '../../app/models/course.dart';
+import '../../app/models/enrollment.dart';
 import '../../app/models/wishlist.dart';
 import '../../utils/course_data.dart';
 import '../../app/networking/course_api_service.dart';
@@ -24,10 +27,13 @@ class _SearchTabState extends NyState<SearchTab> {
 
   List<Course> _allCourses = [];
   List<Course> _filteredCourses = [];
-  // ✅ Removed _enrolledCourses list since we'll use Course.isEnrolled
+  bool _isLoadingCourse = false;
+  String? _loadingCourseId;
+
+  // ✅ Add enrolled course IDs tracking
+  List<String> _enrolledCourseIds = [];
 
   List<Wishlist> _wishlistItems = [];
-  Map<String, dynamic>? _userData;
   String _searchQuery = '';
   bool _isAuthenticated = false;
 
@@ -41,16 +47,257 @@ class _SearchTabState extends NyState<SearchTab> {
       );
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+
+    // Check if we returned from another page and refresh enrollment status
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _isAuthenticated) {
+        _forceRefreshEnrolledCourses();
+      }
+    });
+  }
+
+  void _handleRouteReturn() async {
+    if (_isAuthenticated) {
+      NyLogger.info('🔄 Returned to SearchTab, refreshing enrollment status');
+      await _forceRefreshEnrolledCourses();
+    }
+  }
+
+  Future<void> _forceRefreshEnrolledCourses() async {
+    if (!_isAuthenticated) return;
+
+    NyLogger.info('🔄 Force refreshing enrolled course IDs...');
+
+    try {
+      var courseApiService = CourseApiService();
+
+      // Clear cache first
+      await NyStorage.delete('enrolled_course_ids');
+
+      // Fetch fresh data from API
+      List<dynamic> enrollmentsData = await courseApiService
+          .getEnrollments(refresh: true)
+          .timeout(Duration(seconds: 15));
+
+      if (enrollmentsData.isNotEmpty) {
+        List<String> enrolledIds = enrollmentsData
+            .where((data) => data['course'] != null)
+            .map((data) => data['course']['id'].toString())
+            .toList();
+
+        setState(() {
+          _enrolledCourseIds = enrolledIds;
+        });
+
+        // ✅ Save with proper type
+        try {
+          await NyStorage.save('enrolled_course_ids', enrolledIds);
+          NyLogger.info(
+              '✅ Force refresh completed. Enrolled IDs: $enrolledIds');
+        } catch (saveError) {
+          NyLogger.error('Failed to save after force refresh: $saveError');
+        }
+      } else {
+        setState(() {
+          _enrolledCourseIds = [];
+        });
+        await NyStorage.save('enrolled_course_ids', <String>[]);
+        NyLogger.info('⚠️ No enrollments found after force refresh');
+      }
+    } catch (e) {
+      NyLogger.error('❌ Force refresh failed: $e');
+    }
+  }
+
+  // ✅ Updated stateActions to use the force refresh method
+  @override
+  get stateActions => {
+        "refresh_courses": () async {
+          await _fetchCourses(refresh: false);
+        },
+        "update_auth_status": (bool status) async {
+          setState(() {
+            _isAuthenticated = status;
+          });
+          if (_isAuthenticated) {
+            await _loadEnrolledCourseIds();
+            await _fetchUserSpecificData();
+          } else {
+            setState(() {
+              _enrolledCourseIds = [];
+            });
+          }
+        },
+        "course_enrolled": (Map<String, dynamic> data) async {
+          NyLogger.info('🎯 SearchTab received course_enrolled event: $data');
+
+          if (data.containsKey('courseId')) {
+            String courseId = data['courseId'].toString();
+
+            // ✅ Add to enrolled course IDs
+            if (!_enrolledCourseIds.contains(courseId)) {
+              setState(() {
+                _enrolledCourseIds.add(courseId);
+              });
+
+              // Update cache
+              await NyStorage.save('enrolled_course_ids', _enrolledCourseIds);
+              NyLogger.info('✅ Added course $courseId to enrolled list');
+              NyLogger.info('   Updated enrolled IDs: $_enrolledCourseIds');
+            } else {
+              NyLogger.info('ℹ️ Course $courseId already in enrolled list');
+            }
+          }
+
+          // ✅ Also force refresh to ensure we have the latest data
+          await _forceRefreshEnrolledCourses();
+        },
+        "refresh_enrolled_courses": () async {
+          await _forceRefreshEnrolledCourses();
+        },
+      };
+
+  Future<void> _enrollInCourse(Course course) async {
+    if (!_isAuthenticated) {
+      confirmAction(() {
+        routeTo(SigninPage.path);
+      },
+          title: trans("You need to login to enroll in courses."),
+          confirmText: trans("Login"),
+          dismissText: trans("Cancel"));
+      return;
+    }
+
+    // ✅ Use local enrollment check
+    if (_isCourseEnrolled(course)) {
+      try {
+        // ✅ Set loading state for this specific course
+        setState(() {
+          _isLoadingCourse = true;
+          _loadingCourseId = course.id.toString();
+        });
+
+        // ✅ Find the enrollment ID for this course
+        var courseApiService = CourseApiService();
+
+        // First, get all enrollments to find the enrollment ID for this specific course
+        List<dynamic> enrollmentsData = await courseApiService
+            .getEnrollments(refresh: false)
+            .timeout(Duration(seconds: 10));
+
+        // Find the enrollment that matches this course
+        Map<String, dynamic>? matchingEnrollment;
+        for (var enrollmentData in enrollmentsData) {
+          if (enrollmentData['course'] != null &&
+              enrollmentData['course']['id'].toString() ==
+                  course.id.toString()) {
+            matchingEnrollment = enrollmentData;
+            break;
+          }
+        }
+
+        if (matchingEnrollment == null) {
+          // Clear loading state
+          setState(() {
+            _isLoadingCourse = false;
+            _loadingCourseId = null;
+          });
+
+          NyLogger.error('❌ No enrollment found for course ${course.id}');
+          showToast(
+            title: trans("Error"),
+            description: trans("Enrollment not found for this course"),
+            icon: Icons.error_outline,
+            style: ToastNotificationStyleType.warning,
+          );
+          return;
+        }
+
+        int enrollmentId = matchingEnrollment['id'];
+        NyLogger.info(
+            '🚀 Found enrollment ID $enrollmentId for course ${course.id}');
+
+        // ✅ Fetch complete enrollment details
+        var completeEnrollmentData =
+            await courseApiService.getEnrollmentDetails(enrollmentId,
+                refresh: true // Always get fresh data when viewing a course
+                );
+
+        // Check if widget is still mounted
+        if (!mounted) return;
+
+        // Clear loading state
+        setState(() {
+          _isLoadingCourse = false;
+          _loadingCourseId = null;
+        });
+
+        // Create complete enrollment object with full course details
+        EnrollmentDetails completeEnrollment =
+            EnrollmentDetails.fromJson(completeEnrollmentData);
+
+        NyLogger.info('✅ Retrieved complete enrollment data:');
+        NyLogger.info('   Course: ${completeEnrollment.course.title}');
+        NyLogger.info('   Enrollment ID: ${completeEnrollment.id}');
+
+        // Navigate to course detail page with complete data
+        Map<String, dynamic> courseData = {
+          'enrollment': completeEnrollment,
+          'course': completeEnrollment.course,
+        };
+
+        routeTo(PurchasedCourseDetailPage.path, data: courseData);
+      } catch (e) {
+        if (!mounted) return;
+
+        // Clear loading state
+        setState(() {
+          _isLoadingCourse = false;
+          _loadingCourseId = null;
+        });
+
+        NyLogger.error('❌ Failed to load enrollment details: $e');
+
+        showToast(
+          title: trans("Error"),
+          description:
+              trans("Failed to load course details. Please try again."),
+          icon: Icons.error_outline,
+          style: ToastNotificationStyleType.warning,
+        );
+
+        // ✅ Fallback: navigate with basic course data
+        Map<String, dynamic> courseData = {
+          'course': course,
+        };
+
+        routeTo(PurchasedCourseDetailPage.path, data: courseData);
+      }
+      return;
+    }
+
+    // Navigate to course detail for enrollment
+    await routeTo(CourseDetailPage.path, data: {
+      'course': course,
+    });
+
+    // ✅ Refresh enrollments when returning from course detail
+    _handleRouteReturn();
+  }
+
+  @override
   get init => () async {
         super.init();
 
         _isAuthenticated = await Auth.isAuthenticated();
         if (_isAuthenticated) {
-          _userData = await Auth.data();
+          // ✅ Load enrolled course IDs first
+          await _loadEnrolledCourseIds();
         }
 
         await _fetchCourses();
-        // ✅ Removed _fetchEnrolledCourses() call since enrollment status comes with courses
 
         _searchController.addListener(() {
           if (_searchController.text != _searchQuery) {
@@ -59,56 +306,149 @@ class _SearchTabState extends NyState<SearchTab> {
         });
       };
 
-  // ✅ Removed _fetchEnrolledCourses method entirely
+  // ✅ New method to load enrolled course IDs from cache
+  Future<void> _loadEnrolledCourseIds() async {
+    if (!_isAuthenticated) {
+      setState(() {
+        _enrolledCourseIds = [];
+      });
+      return;
+    }
 
-  @override
-  get stateActions => {
-        "refresh_courses": () async {
-          await _fetchCourses(refresh: true);
-        },
-        "update_auth_status": (bool status) async {
-          setState(() {
-            _isAuthenticated = status;
-          });
-          if (_isAuthenticated) {
-            _userData = await Auth.data();
-            await _fetchUserSpecificData();
-          }
-        },
-        "course_enrolled": (Map<String, dynamic> data) async {
-          if (data.containsKey('updatedCourse') &&
-              data.containsKey('courseId')) {
-            try {
-              Course updatedCourse = Course.fromJson(data['updatedCourse']);
-              String courseId = data['courseId'].toString();
+    try {
+      // Always try to get from storage first (faster)
+      dynamic cachedData = await NyStorage.read('enrolled_course_ids');
+      List<String>? cachedIds;
 
-              // Find and update the course in our lists
-              setState(() {
-                // Update in _allCourses
-                int allCoursesIndex =
-                    _allCourses.indexWhere((c) => c.id.toString() == courseId);
-                if (allCoursesIndex >= 0) {
-                  _allCourses[allCoursesIndex] = updatedCourse;
-                }
-
-                // Update in _filteredCourses
-                int filteredIndex = _filteredCourses
-                    .indexWhere((c) => c.id.toString() == courseId);
-                if (filteredIndex >= 0) {
-                  _filteredCourses[filteredIndex] = updatedCourse;
-                }
-              });
-
-              NyLogger.info(
-                  'Updated course enrollment status in SearchTab for course $courseId');
-            } catch (e) {
-              NyLogger.error('Error updating course enrollment status: $e');
-              // Fallback: refresh all courses
-              await _fetchCourses(refresh: true);
+      // ✅ Handle different data types that might be stored
+      if (cachedData != null) {
+        if (cachedData is List<String>) {
+          cachedIds = cachedData;
+        } else if (cachedData is List) {
+          // Convert List<dynamic> to List<String>
+          cachedIds = cachedData.map((item) => item.toString()).toList();
+        } else if (cachedData is String) {
+          // Handle case where single string is stored
+          try {
+            // Try to parse as JSON array
+            var decoded = jsonDecode(cachedData);
+            if (decoded is List) {
+              cachedIds = decoded.map((item) => item.toString()).toList();
+            } else {
+              // Single string, convert to list
+              cachedIds = [cachedData];
             }
+          } catch (e) {
+            // If JSON parsing fails, treat as single string
+            cachedIds = [cachedData];
           }
-        },
-      };
+        } else {
+          // Unknown type, clear cache and start fresh
+          NyLogger.debug(
+              'Unknown cache type: ${cachedData.runtimeType}, clearing cache');
+          await NyStorage.delete('enrolled_course_ids');
+          cachedIds = null;
+        }
+      }
+
+      if (cachedIds != null && cachedIds.isNotEmpty) {
+        setState(() {
+          _enrolledCourseIds = cachedIds!;
+        });
+        NyLogger.info(
+            '✅ Loaded ${cachedIds.length} enrolled course IDs from cache: $cachedIds');
+
+        // ✅ Also fetch fresh data in background to keep cache updated
+        _fetchFreshEnrollmentData();
+        return;
+      }
+
+      // If no valid cache, fetch from API
+      await _fetchFreshEnrollmentData();
+    } catch (e) {
+      NyLogger.error('❌ Error loading enrolled course IDs: $e');
+
+      // ✅ Clear corrupted cache and start fresh
+      try {
+        await NyStorage.delete('enrolled_course_ids');
+        NyLogger.info('🧹 Cleared corrupted cache, fetching fresh data');
+      } catch (clearError) {
+        NyLogger.error('Failed to clear cache: $clearError');
+      }
+
+      setState(() {
+        _enrolledCourseIds = [];
+      });
+
+      // Try to fetch fresh data
+      await _fetchFreshEnrollmentData();
+    }
+  }
+
+  Future<void> _fetchFreshEnrollmentData() async {
+    if (!_isAuthenticated) return;
+
+    try {
+      var courseApiService = CourseApiService();
+      List<dynamic> enrollmentsData = await courseApiService
+          .getEnrollments(refresh: false)
+          .timeout(Duration(seconds: 10));
+
+      if (enrollmentsData.isNotEmpty) {
+        List<String> enrolledIds = enrollmentsData
+            .where((data) => data['course'] != null)
+            .map((data) => data['course']['id'].toString())
+            .toList();
+
+        // ✅ Only update state if the data has actually changed
+        if (!_listsEqual(_enrolledCourseIds, enrolledIds)) {
+          setState(() {
+            _enrolledCourseIds = enrolledIds;
+          });
+
+          // ✅ Ensure we save as List<String>
+          try {
+            await NyStorage.save('enrolled_course_ids', enrolledIds);
+            NyLogger.info('✅ Updated enrolled course IDs: $enrolledIds');
+          } catch (saveError) {
+            NyLogger.error('Failed to save enrolled course IDs: $saveError');
+          }
+        }
+      } else {
+        if (_enrolledCourseIds.isNotEmpty) {
+          setState(() {
+            _enrolledCourseIds = [];
+          });
+          // Save empty list to cache
+          await NyStorage.save('enrolled_course_ids', <String>[]);
+        }
+      }
+    } catch (e) {
+      NyLogger.error('❌ Failed to fetch fresh enrollment data: $e');
+    }
+  }
+
+  // ✅ Helper method to check if a course is enrolled
+  bool _isCourseEnrolled(Course course) {
+    bool isEnrolled = _enrolledCourseIds.contains(course.id.toString());
+    NyLogger.debug(
+        '🔍 Course ${course.id} (${course.title}) enrollment status: $isEnrolled');
+    return isEnrolled;
+  }
+
+// ✅ Helper method to compare two lists
+  bool _listsEqual(List<String> list1, List<String> list2) {
+    if (list1.length != list2.length) return false;
+
+    // Sort both lists to compare content regardless of order
+    List<String> sortedList1 = List.from(list1)..sort();
+    List<String> sortedList2 = List.from(list2)..sort();
+
+    for (int i = 0; i < sortedList1.length; i++) {
+      if (sortedList1[i] != sortedList2[i]) return false;
+    }
+    return true;
+  }
 
   Future<void> _fetchCourses({bool refresh = false}) async {
     setLoading(true, name: 'fetch_courses');
@@ -123,12 +463,12 @@ class _SearchTabState extends NyState<SearchTab> {
         coursesData = await courseApiService.getAllCourses(refresh: refresh);
       }
 
-      // ✅ Courses now come with isEnrolled field already populated
       _allCourses = coursesData.map((data) => Course.fromJson(data)).toList();
       _filteredCourses = List.from(_allCourses);
 
       if (_isAuthenticated) {
-        // ✅ Only fetch wishlist data since enrollment status comes with courses
+        // ✅ Refresh enrolled course IDs and wishlist data
+        await _loadEnrolledCourseIds();
         await _fetchWishlistData();
       }
     } catch (e) {
@@ -146,7 +486,6 @@ class _SearchTabState extends NyState<SearchTab> {
     }
   }
 
-  // ✅ Simplified method to only fetch wishlist data
   Future<void> _fetchWishlistData() async {
     if (!_isAuthenticated) return;
 
@@ -172,7 +511,6 @@ class _SearchTabState extends NyState<SearchTab> {
     }
   }
 
-  // ✅ Renamed from _fetchUserSpecificData for clarity
   Future<void> _fetchUserSpecificData() async {
     await _fetchWishlistData();
   }
@@ -255,28 +593,6 @@ class _SearchTabState extends NyState<SearchTab> {
       showToastDanger(description: trans("Failed to update wishlist"));
       NyLogger.error('Error toggling wishlist: $e');
     }
-  }
-
-  Future<void> _enrollInCourse(Course course) async {
-    if (!_isAuthenticated) {
-      confirmAction(() {
-        routeTo(SigninPage.path);
-      },
-          title: trans("You need to login to enroll in courses."),
-          confirmText: trans("Login"),
-          dismissText: trans("Cancel"));
-      return;
-    }
-
-    // ✅ Use course.isEnrolled instead of checking _enrolledCourses list
-    if (course.isEnrolled) {
-      routeTo(PurchasedCourseDetailPage.path, data: {'course': course});
-      return;
-    }
-
-    routeTo(CourseDetailPage.path, data: {
-      'course': course,
-    });
   }
 
   @override
@@ -363,7 +679,7 @@ class _SearchTabState extends NyState<SearchTab> {
             IconButton(
               icon: Icon(Icons.refresh, color: Colors.black),
               onPressed: () async {
-                await _fetchCourses(refresh: true);
+                await _fetchCourses(refresh: false);
               },
             ),
         ],
@@ -503,8 +819,8 @@ class _SearchTabState extends NyState<SearchTab> {
               bool isInWishlist =
                   _wishlistItems.any((c) => c.courseId == course.id);
 
-              // ✅ Use course.isEnrolled directly
-              bool isEnrolled = course.isEnrolled;
+              // ✅ Use local enrollment check
+              bool isEnrolled = _isCourseEnrolled(course);
 
               return _buildCourseListItem(course,
                   isInWishlist: isInWishlist, isEnrolled: isEnrolled);
@@ -517,6 +833,9 @@ class _SearchTabState extends NyState<SearchTab> {
 
   Widget _buildCourseListItem(Course course,
       {bool isInWishlist = false, bool isEnrolled = false}) {
+    bool isLoading =
+        _isLoadingCourse && _loadingCourseId == course.id.toString();
+
     return InkWell(
       onTap: () => _navigateToCourseDetail(course),
       child: Container(
@@ -667,7 +986,9 @@ class _SearchTabState extends NyState<SearchTab> {
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
                     ElevatedButton(
-                      onPressed: () => _enrollInCourse(course),
+                      // ✅ Disable button when loading
+                      onPressed:
+                          isLoading ? null : () => _enrollInCourse(course),
                       style: ElevatedButton.styleFrom(
                         backgroundColor:
                             isEnrolled ? Colors.grey.shade200 : Colors.amber,
@@ -677,13 +998,27 @@ class _SearchTabState extends NyState<SearchTab> {
                           borderRadius: BorderRadius.circular(4),
                         ),
                       ),
-                      child: Text(
-                        isEnrolled ? trans("View Course") : trans('Enroll Now'),
-                        style: TextStyle(
-                          color: isEnrolled ? Colors.black87 : Colors.white,
-                          fontSize: 12,
-                        ),
-                      ),
+                      child: isLoading
+                          ? SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                valueColor: AlwaysStoppedAnimation<Color>(
+                                  isEnrolled ? Colors.black : Colors.white,
+                                ),
+                              ),
+                            )
+                          : Text(
+                              isEnrolled
+                                  ? trans("View Course")
+                                  : trans('Enroll Now'),
+                              style: TextStyle(
+                                color:
+                                    isEnrolled ? Colors.black87 : Colors.white,
+                                fontSize: 12,
+                              ),
+                            ),
                     ),
                   ],
                 ),
@@ -789,7 +1124,7 @@ class _SearchTabState extends NyState<SearchTab> {
                         },
                       ),
 
-                    // ✅ Updated to use course.isEnrolled
+                    // ✅ Updated to use local enrollment check
                     if (_isAuthenticated)
                       ListTile(
                         leading: Icon(Icons.school),
@@ -798,7 +1133,7 @@ class _SearchTabState extends NyState<SearchTab> {
                           pop();
                           setState(() {
                             _filteredCourses = _allCourses
-                                .where((course) => course.isEnrolled)
+                                .where((course) => _isCourseEnrolled(course))
                                 .toList();
                           });
                         },

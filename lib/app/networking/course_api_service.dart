@@ -180,96 +180,45 @@ class CourseApiService extends NyApiService {
         });
   }
 
-  Future<Course> getCourseWithEnrollmentDetails(int courseId,
-      {bool refresh = false}) async {
-    try {
-      //  Use your existing getCourseDetails method - it already includes enrollment status when authenticated
-      final courseData = await getCourseDetails(courseId, refresh: refresh);
-      return Course.fromJson(courseData);
-    } catch (e) {
-      NyLogger.error('Error getting course with enrollment details: $e');
-      rethrow;
-    }
-  }
-
-  Future<List<Course>> getEnrolledCoursesAsObjects(
-      {bool refresh = false}) async {
-    try {
-      //  Use your existing getEnrolledCourses method
-      final coursesData = await getEnrolledCourses(refresh: refresh);
-      return coursesData
-          .map((courseData) => Course.fromJson(courseData))
-          .toList();
-    } catch (e) {
-      NyLogger.error('Error getting enrolled courses as objects: $e');
-      rethrow;
-    }
-  }
-
-  Future<List<Course>> getAllCoursesAsObjects({
-    int? categoryId,
-    String? search,
-    String? location,
-    bool refresh = false,
-  }) async {
-    try {
-      // Use your existing getAllCourses method - it already includes enrollment status when authenticated
-      final coursesData = await getAllCourses(
-        categoryId: categoryId,
-        search: search,
-        location: location,
-        refresh: refresh,
-      );
-      return coursesData
-          .map((courseData) => Course.fromJson(courseData))
-          .toList();
-    } catch (e) {
-      NyLogger.error('Error getting courses as objects: $e');
-      rethrow;
-    }
-  }
-
-  Future<List<dynamic>> getEnrolledCourses({bool refresh = false}) async {
+  /// ✅ NEW: Get enrollments directly from enrollment API
+  Future<List<dynamic>> getEnrollments({bool refresh = false}) async {
     final authToken = await backpackRead('auth_token');
-    print(authToken);
     if (authToken == null) {
       throw Exception("Not logged in");
     }
 
-    const cacheKey = 'enrolled_courses';
+    const cacheKey = 'enrollments';
 
     if (refresh) {
       await cache().clear(cacheKey);
-      NyLogger.info('Cleared enrolled courses cache due to refresh request');
+      NyLogger.info('Cleared enrollments cache due to refresh request');
     }
+
     final headers = await getAuthHeaders();
-    await Future.delayed(Duration(milliseconds: Random().nextInt(100)));
+
     return await network(
         request: (request) => request.get("/enrollments/"),
         headers: headers,
         cacheKey: cacheKey,
-        cacheDuration: Duration(hours: 1),
+        cacheDuration: CACHE_ENROLLED_COURSES,
         handleSuccess: (Response response) {
           try {
             NyLogger.info(
-                'Raw API Response type: ${response.data.runtimeType}');
-            NyLogger.info('Raw API Response: ${response.data}');
+                'Raw Enrollments API Response type: ${response.data.runtimeType}');
+            NyLogger.info('Raw Enrollments API Response: ${response.data}');
 
-            // ✅ The API returns a direct array, not paginated response
-            List<dynamic> courses;
+            List<dynamic> enrollments;
 
             if (response.data is List) {
-              // Direct array response (this is what your API returns)
-              courses = response.data as List<dynamic>;
+              enrollments = response.data as List<dynamic>;
               NyLogger.info(
-                  '✅ Parsed direct array response with ${courses.length} courses');
+                  '✅ Parsed direct array response with ${enrollments.length} enrollments');
             } else if (response.data is Map) {
-              // Handle edge cases if response format changes
               final responseMap = response.data as Map;
               if (responseMap.containsKey('results')) {
-                courses = responseMap['results'] as List<dynamic>;
+                enrollments = responseMap['results'] as List<dynamic>;
                 NyLogger.info(
-                    '✅ Parsed paginated response with ${courses.length} courses');
+                    '✅ Parsed paginated response with ${enrollments.length} enrollments');
               } else {
                 NyLogger.error('❌ Unexpected map response structure');
                 NyLogger.error('Available keys: ${responseMap.keys.toList()}');
@@ -283,32 +232,41 @@ class CourseApiService extends NyApiService {
                   "Unexpected response type: ${response.data.runtimeType}");
             }
 
-            // Validate the course data structure
-            for (int i = 0; i < courses.length; i++) {
-              final course = courses[i];
-              if (course is! Map) {
+            // Validate enrollment data structure
+            for (int i = 0; i < enrollments.length; i++) {
+              final enrollment = enrollments[i];
+              if (enrollment is! Map) {
                 NyLogger.error(
-                    '⚠️ Course at index $i is not a Map: ${course.runtimeType}');
+                    '⚠️ Enrollment at index $i is not a Map: ${enrollment.runtimeType}');
               } else {
-                NyLogger.info('✅ Course $i has keys: ${course.keys.toList()}');
+                NyLogger.info(
+                    '✅ Enrollment $i has keys: ${enrollment.keys.toList()}');
+
+                // Validate course data within enrollment
+                if (enrollment['course'] != null &&
+                    enrollment['course'] is Map) {
+                  final courseData = enrollment['course'] as Map;
+                  NyLogger.info(
+                      '   Course data keys: ${courseData.keys.toList()}');
+                } else {
+                  NyLogger.error('   ⚠️ Invalid course data in enrollment $i');
+                }
               }
             }
 
             NyLogger.info(
-                '✅ Successfully fetched ${courses.length} enrolled courses');
-            return courses;
+                '✅ Successfully fetched ${enrollments.length} enrollments');
+            return enrollments;
           } catch (parseError) {
-            NyLogger.error(
-                '❌ Error parsing enrolled courses response: $parseError');
+            NyLogger.error('❌ Error parsing enrollments response: $parseError');
             NyLogger.error('Response data type: ${response.data.runtimeType}');
             NyLogger.error('Response data: ${response.data}');
-            rethrow; // Re-throw to trigger handleFailure
+            rethrow;
           }
         },
         handleFailure: (DioException dioError) {
-          String errorMessage = "Failed to fetch enrolled courses";
+          String errorMessage = "Failed to fetch enrollments";
 
-          // Enhanced error handling
           switch (dioError.type) {
             case DioExceptionType.connectionTimeout:
               errorMessage =
@@ -344,7 +302,7 @@ class CourseApiService extends NyApiService {
           }
 
           NyLogger.error(
-              '❌ getEnrolledCourses error: ${dioError.type} - ${dioError.message}');
+              '❌ getEnrollments error: ${dioError.type} - ${dioError.message}');
           NyLogger.error('Response status: ${dioError.response?.statusCode}');
           NyLogger.error('Response data: ${dioError.response?.data}');
 
@@ -352,54 +310,118 @@ class CourseApiService extends NyApiService {
         });
   }
 
-  Future<void> preloadEnrolledCoursesInBackground() async {
+  /// ✅ NEW: Get enrollments as Enrollment objects
+  Future<List<Enrollment>> getEnrollmentsAsObjects(
+      {bool refresh = false}) async {
     try {
-      final authToken = await backpackRead('auth_token');
-      if (authToken == null) return;
-
-      // Check if we already have recent cached data
-      final cachedData = await cache().get('enrolled_courses');
-      if (cachedData != null) {
-        NyLogger.info(
-            'Enrolled courses already cached, skipping background preload');
-        return;
-      }
-
-      // Load in background without waiting
-      Future.microtask(() async {
-        try {
-          await getEnrolledCourses();
-          NyLogger.info('Background preload of enrolled courses completed');
-        } catch (e) {
-          NyLogger.error('Background preload of enrolled courses failed: $e');
-        }
-      });
+      final enrollmentsData = await getEnrollments(refresh: refresh);
+      return enrollmentsData
+          .map((enrollmentData) => Enrollment.fromJson(enrollmentData))
+          .toList();
     } catch (e) {
-      NyLogger.error('Error starting background enrolled courses preload: $e');
+      NyLogger.error('Error getting enrollments as objects: $e');
+      rethrow;
     }
   }
 
-  /// Get enrolled courses with fallback to cached data on error
-  Future<List<dynamic>> getEnrolledCoursesWithFallback(
+  /// ✅ NEW: Get enrollments with fallback to cached data
+  Future<List<dynamic>> getEnrollmentsWithFallback(
       {bool refresh = false}) async {
     try {
-      // Try to get fresh data
-      return await getEnrolledCourses(refresh: refresh);
+      return await getEnrollments(refresh: refresh);
     } catch (e) {
-      NyLogger.error('Primary enrolled courses fetch failed: $e');
+      NyLogger.error('Primary enrollments fetch failed: $e');
 
       try {
-        final cachedData = await cache().get('enrolled_courses');
+        final cachedData = await cache().get('enrollments');
         if (cachedData != null && cachedData is List) {
-          NyLogger.info('Using cached enrolled courses data as fallback');
+          NyLogger.info('Using cached enrollments data as fallback');
           return cachedData;
         }
       } catch (cacheError) {
         NyLogger.error('Cache fallback failed: $cacheError');
       }
 
-      NyLogger.error('Returning empty enrolled courses list as last resort');
+      NyLogger.error('Returning empty enrollments list as last resort');
       return [];
+    }
+  }
+
+  /// ✅ DEPRECATED: Keep for backward compatibility, but now uses enrollment API
+  @Deprecated(
+      'Use getEnrollments() instead - this method now redirects to the enrollment API')
+  Future<List<dynamic>> getEnrolledCourses({bool refresh = false}) async {
+    NyLogger.info(
+        '⚠️ getEnrolledCourses() is deprecated, redirecting to getEnrollments()');
+    return await getEnrollments(refresh: refresh);
+  }
+
+  /// ✅ DEPRECATED: Keep for backward compatibility
+  @Deprecated('Use getEnrollmentsWithFallback() instead')
+  Future<List<dynamic>> getEnrolledCoursesWithFallback(
+      {bool refresh = false}) async {
+    NyLogger.info(
+        '⚠️ getEnrolledCoursesWithFallback() is deprecated, redirecting to getEnrollmentsWithFallback()');
+    return await getEnrollmentsWithFallback(refresh: refresh);
+  }
+
+  Future<Course> getCourseWithEnrollmentDetails(int courseId,
+      {bool refresh = false}) async {
+    try {
+      final courseData = await getCourseDetails(courseId, refresh: refresh);
+      return Course.fromJson(courseData);
+    } catch (e) {
+      NyLogger.error('Error getting course with enrollment details: $e');
+      rethrow;
+    }
+  }
+
+  Future<List<Course>> getAllCoursesAsObjects({
+    int? categoryId,
+    String? search,
+    String? location,
+    bool refresh = false,
+  }) async {
+    try {
+      final coursesData = await getAllCourses(
+        categoryId: categoryId,
+        search: search,
+        location: location,
+        refresh: refresh,
+      );
+      return coursesData
+          .map((courseData) => Course.fromJson(courseData))
+          .toList();
+    } catch (e) {
+      NyLogger.error('Error getting courses as objects: $e');
+      rethrow;
+    }
+  }
+
+  Future<void> preloadEnrollmentsInBackground() async {
+    try {
+      final authToken = await backpackRead('auth_token');
+      if (authToken == null) return;
+
+      // Check if we already have recent cached data
+      final cachedData = await cache().get('enrollments');
+      if (cachedData != null) {
+        NyLogger.info(
+            'Enrollments already cached, skipping background preload');
+        return;
+      }
+
+      // Load in background without waiting
+      Future.microtask(() async {
+        try {
+          await getEnrollments();
+          NyLogger.info('Background preload of enrollments completed');
+        } catch (e) {
+          NyLogger.error('Background preload of enrollments failed: $e');
+        }
+      });
+    } catch (e) {
+      NyLogger.error('Error starting background enrollments preload: $e');
     }
   }
 
@@ -632,20 +654,65 @@ class CourseApiService extends NyApiService {
         });
   }
 
-  /// Get enrollment for specific course (with caching)
-  Future<Map<String, dynamic>?> getEnrollmentForCourse(int courseId) async {
+  /// ✅ NEW: Get specific enrollment details by enrollment ID
+  Future<dynamic> getEnrollmentDetails(int enrollmentId,
+      {bool refresh = false}) async {
+    final authToken = await backpackRead('auth_token');
+    if (authToken == null) {
+      throw Exception("Not logged in");
+    }
+
+    final cacheKey = 'enrollment_details_$enrollmentId';
+
+    if (refresh) {
+      await cache().clear(cacheKey);
+    }
+
+    return await network(
+        request: (request) => request.get("/enrollments/$enrollmentId/"),
+        headers: {"Authorization": "Token $authToken"},
+        cacheKey: cacheKey,
+        cacheDuration: CACHE_COURSE_DETAILS,
+        handleSuccess: (Response response) {
+          NyLogger.info(
+              '✅ Successfully fetched enrollment details for ID: $enrollmentId');
+          return response.data;
+        },
+        handleFailure: (DioException dioError) {
+          NyLogger.error(
+              '❌ Failed to fetch enrollment details: ${dioError.message}');
+          throw Exception(
+              "Failed to fetch enrollment details: ${dioError.message}");
+        });
+  }
+
+  /// ✅ NEW: Get enrollment details as EnrollmentDetails object
+  Future<EnrollmentDetails> getEnrollmentDetailsAsObject(int enrollmentId,
+      {bool refresh = false}) async {
+    try {
+      final enrollmentData =
+          await getEnrollmentDetails(enrollmentId, refresh: refresh);
+      return EnrollmentDetails.fromJson(enrollmentData);
+    } catch (e) {
+      NyLogger.error('Error getting enrollment details as object: $e');
+      rethrow;
+    }
+  }
+
+  /// ✅ NEW: Get specific enrollment by course ID (searches through enrollments list)
+  Future<Enrollment?> getEnrollmentForCourse(int courseId) async {
     try {
       final authToken = await backpackRead('auth_token');
       if (authToken == null) {
         return null;
       }
 
-      List<dynamic> enrollments = await getEnrolledCourses();
+      List<dynamic> enrollmentsData = await getEnrollments();
 
-      for (var enrollment in enrollments) {
-        if (enrollment['course'] != null &&
-            enrollment['course']['id'].toString() == courseId.toString()) {
-          return enrollment;
+      for (var enrollmentData in enrollmentsData) {
+        if (enrollmentData['course'] != null &&
+            enrollmentData['course']['id'].toString() == courseId.toString()) {
+          return Enrollment.fromJson(enrollmentData);
         }
       }
 
@@ -656,11 +723,22 @@ class CourseApiService extends NyApiService {
     }
   }
 
+  /// ✅ NEW: Check if user has valid enrollment for a course
+  Future<bool> hasValidEnrollmentForCourse(int courseId) async {
+    try {
+      final enrollment = await getEnrollmentForCourse(courseId);
+      return enrollment?.isValid ?? false;
+    } catch (e) {
+      NyLogger.error(
+          'Error checking enrollment validity for course $courseId: $e');
+      return false;
+    }
+  }
+
   Future<void> preloadEssentialDataWithEnrollmentStatus() async {
     try {
       final isAuthenticated = await backpackRead('auth_token') != null;
 
-      // ✅ Use existing methods - they already include enrollment status when authenticated
       await Future.wait([
         getFeaturedCourses().catchError((e) {
           NyLogger.error('Failed to preload featured courses: $e');
@@ -674,16 +752,16 @@ class CourseApiService extends NyApiService {
           NyLogger.error('Failed to preload all courses: $e');
           return <dynamic>[];
         }),
-        preloadEnrolledCoursesInBackground().catchError((e) {
-          NyLogger.error('Failed to preload enrolled courses: $e');
+        preloadEnrollmentsInBackground().catchError((e) {
+          NyLogger.error('Failed to preload enrollments: $e');
           return <dynamic>[];
         }),
       ]);
 
       if (isAuthenticated) {
         await Future.wait([
-          getEnrolledCourses().catchError((e) {
-            NyLogger.error('Failed to preload enrolled courses: $e');
+          getEnrollments().catchError((e) {
+            NyLogger.error('Failed to preload enrollments: $e');
             return <dynamic>[];
           }),
           getWishlist().catchError((e) {
@@ -702,54 +780,23 @@ class CourseApiService extends NyApiService {
   /// Invalidate enrollment-specific caches
   Future<void> invalidateEnrollmentCaches() async {
     final cacheKeysToInvalidate = [
-      'enrolled_courses',
-      'enrolled_courses_with_status',
+      'enrollments',
+      'enrolled_courses', // Keep for backward compatibility
     ];
 
     await Future.wait(cacheKeysToInvalidate.map((key) => cache().clear(key)));
-
-    // Also invalidate any course complete details caches
-    // Note: You might want to track specific course IDs and clear their complete details
+    NyLogger.info('Invalidated enrollment caches');
   }
 
-  /// Check enrollment validity
-  @Deprecated('Use Course.hasValidSubscription property instead')
+  /// ✅ DEPRECATED: Use Enrollment.isValid property instead
+  @Deprecated('Use Enrollment.isValid property instead')
   Future<bool> checkEnrollmentValidity(int courseId) async {
     try {
-      // Try to get course with enrollment details first
-      final course = await getCourseWithEnrollmentDetails(courseId);
-      return course.hasValidSubscription;
+      final enrollment = await getEnrollmentForCourse(courseId);
+      return enrollment?.isValid ?? false;
     } catch (e) {
       NyLogger.error('Error checking enrollment validity: $e');
-
-      // Fallback to original method
-      try {
-        dynamic enrollmentData = await getEnrollmentForCourse(courseId);
-
-        if (enrollmentData == null) {
-          return false;
-        }
-
-        Enrollment enrollment = Enrollment.fromJson(enrollmentData);
-
-        if (!enrollment.isActive) {
-          return false;
-        }
-
-        if (enrollment.planType == Enrollment.PLAN_TYPE_LIFETIME) {
-          return true;
-        }
-
-        if (enrollment.expiryDate == null) {
-          return false;
-        }
-
-        DateTime expiryDate = DateTime.parse(enrollment.expiryDate!);
-        return expiryDate.isAfter(DateTime.now());
-      } catch (e) {
-        NyLogger.error('Error in fallback enrollment check: $e');
-        return false;
-      }
+      return false;
     }
   }
 
@@ -777,8 +824,8 @@ class CourseApiService extends NyApiService {
 
       if (isAuthenticated) {
         await Future.wait([
-          getEnrolledCourses().catchError((e) {
-            NyLogger.error('Failed to preload enrolled courses: $e');
+          getEnrollments().catchError((e) {
+            NyLogger.error('Failed to preload enrollments: $e');
             return <dynamic>[];
           }),
           getWishlist().catchError((e) {
@@ -799,14 +846,13 @@ class CourseApiService extends NyApiService {
     final cacheKeysToInvalidate = [
       'featured_courses',
       'top_courses',
-      'enrolled_courses',
+      'enrollments',
+      'enrolled_courses', // Keep for backward compatibility
       'wishlist',
     ];
 
     await Future.wait(cacheKeysToInvalidate.map((key) => cache().clear(key)));
-
-    // Also clear any course-specific caches
-    // Note: In a real implementation, you might want to track which specific course caches exist
+    NyLogger.info('Invalidated all course-related caches');
   }
 
   // Helper methods
@@ -875,7 +921,8 @@ class CourseApiService extends NyApiService {
     // Clear ALL course-related caches to ensure fresh data everywhere
     await Future.wait([
       // User-specific caches
-      cache().clear('enrolled_courses'),
+      cache().clear('enrollments'),
+      cache().clear('enrolled_courses'), // Backward compatibility
       cache().clear('wishlist'),
 
       // Course-specific caches
@@ -891,14 +938,17 @@ class CourseApiService extends NyApiService {
       // Category-specific caches (we need to clear all categories)
       _clearAllCategoryCaches(),
     ]);
+
+    // Preload fresh enrollment data in background
     Future.microtask(() async {
       try {
-        await getEnrolledCoursesWithFallback(refresh: true);
-        NyLogger.info('Preloaded fresh enrolled courses after purchase');
+        await getEnrollmentsWithFallback(refresh: true);
+        NyLogger.info('Preloaded fresh enrollments after purchase');
       } catch (e) {
-        NyLogger.error('Failed to preload enrolled courses after purchase: $e');
+        NyLogger.error('Failed to preload enrollments after purchase: $e');
       }
     });
+
     NyLogger.info(
         'Invalidated all course caches after purchase for course $courseId');
   }
@@ -912,20 +962,21 @@ class CourseApiService extends NyApiService {
     }
   }
 
-  Future<List<dynamic>> getEnrolledCoursesWithNetworkCheck(
+  /// ✅ NEW: Get enrollments with network check
+  Future<List<dynamic>> getEnrollmentsWithNetworkCheck(
       {bool refresh = false}) async {
     // Check network first
     final hasNetwork = await _isNetworkAvailable();
     if (!hasNetwork) {
-      NyLogger.error('No network available, using cached enrolled courses');
-      final cachedData = await cache().get('enrolled_courses');
+      NyLogger.error('No network available, using cached enrollments');
+      final cachedData = await cache().get('enrollments');
       if (cachedData != null && cachedData is List) {
         return cachedData;
       }
       throw Exception("No internet connection and no cached data available");
     }
 
-    return await getEnrolledCoursesWithFallback(refresh: refresh);
+    return await getEnrollmentsWithFallback(refresh: refresh);
   }
 
   Future<void> _clearAllCategoryCaches() async {
@@ -940,14 +991,23 @@ class CourseApiService extends NyApiService {
     }
   }
 
-// Clear all search cache
-
   /// Invalidate caches after enrollment
   Future<void> _invalidatePostEnrollmentCaches(int courseId) async {
     await Future.wait([
-      cache().clear('enrolled_courses'),
+      cache().clear('enrollments'),
+      cache().clear('enrolled_courses'), // Backward compatibility
       cache().clear('course_details_$courseId'),
       cache().clear('course_complete_details_$courseId'),
     ]);
+    NyLogger.info('Invalidated post-enrollment caches for course $courseId');
+  }
+
+  /// ✅ NEW: Helper method to get authentication headers
+  Future<Map<String, String>> getAuthHeaders() async {
+    final authToken = await backpackRead('auth_token');
+    if (authToken != null) {
+      return {"Authorization": "Token $authToken"};
+    }
+    return {};
   }
 }

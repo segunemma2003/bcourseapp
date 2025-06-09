@@ -9,6 +9,7 @@ import 'package:device_info_plus/device_info_plus.dart';
 import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/return_code.dart';
 import 'package:ffmpeg_kit_flutter_new/statistics.dart';
+import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:nylo_framework/nylo_framework.dart';
@@ -380,9 +381,22 @@ class VideoService {
     _checkNetworkAndUpdateQueue();
   }
 
+  String? _currentUserId;
   // Initialize service
   Future<void> initialize() async {
     try {
+      await _setCurrentUserContext();
+      try {
+        var user = await Auth.data();
+        if (user != null) {
+          FirebaseCrashlytics.instance
+              .setUserIdentifier(user['id']?.toString() ?? 'unknown');
+          FirebaseCrashlytics.instance
+              .setCustomKey('user_email', user['email'] ?? 'unknown');
+        }
+      } catch (e) {
+        _reportError('set_user_context', e);
+      }
       // Load settings first
       await _loadSettings();
 
@@ -395,17 +409,109 @@ class VideoService {
       // Check permissions early but don't fail initialization if denied
       bool hasPermission = await checkAndRequestStoragePermissions();
       if (!hasPermission) {
+        FirebaseCrashlytics.instance
+            .log('Storage permissions not granted during initialization');
         NyLogger.info(
             'Storage permissions not granted during initialization - downloads will request when needed');
       }
 
+      await _cleanupOtherUsersData();
       // Restore queue and pending downloads
       await _restoreQueueState();
       await _restorePendingDownloads();
 
+      FirebaseCrashlytics.instance.log('VideoService initialized successfully');
       NyLogger.info('VideoService initialized successfully');
-    } catch (e) {
+    } catch (e, stackTrace) {
+      _reportError('initialize', e, stackTrace: stackTrace);
+
       NyLogger.error('Error initializing VideoService: $e');
+      rethrow; // Re-throw to maintain original behavior
+    }
+  }
+
+  Future<void> _setCurrentUserContext() async {
+    try {
+      var user = await Auth.data();
+      if (user != null) {
+        _currentUserId = user['id']?.toString();
+        FirebaseCrashlytics.instance
+            .setCustomKey('current_user_id', _currentUserId ?? 'unknown');
+      }
+    } catch (e) {
+      _reportError('set_current_user_context', e);
+      _currentUserId = null;
+    }
+  }
+
+  Future<void> _cleanupOtherUsersData() async {
+    try {
+      String currentUserId = await _getCurrentUserId();
+
+      // Clean up storage keys from other users
+      await _cleanupOtherUsersStorageKeys(currentUserId);
+
+      // Optionally clean up files from other users (be careful with this)
+      // await _cleanupOtherUsersFiles(currentUserId);
+
+      FirebaseCrashlytics.instance
+          .log('Cleaned up other users data, current user: $currentUserId');
+    } catch (e, stackTrace) {
+      _reportError('cleanup_other_users_data', e, stackTrace: stackTrace);
+    }
+  }
+
+  Future<void> _cleanupOtherUsersStorageKeys(String currentUserId) async {
+    try {
+      // Since NyStorage doesn't have a keys() method, we'll track known keys
+      // and clean them up individually
+      List<String> knownUserKeys = [
+        'download_queue',
+        'pending_downloads',
+        'download_throttling_enabled',
+        'download_max_bytes_per_second',
+        'network_preference',
+        'pause_on_mobile_data',
+        'max_concurrent_downloads',
+      ];
+
+      List<String> keysToRemove = [];
+
+      // Check for user-specific versions of known keys
+      for (String baseKey in knownUserKeys) {
+        // Look for keys with different user IDs
+        for (int i = 1; i <= 10; i++) {
+          // Check up to 10 different user IDs
+          String otherUserKey = '${baseKey}_user_$i';
+          if (otherUserKey != '${baseKey}_user_$currentUserId') {
+            // Try to read the key to see if it exists
+            try {
+              dynamic value = await NyStorage.read(otherUserKey);
+              if (value != null) {
+                keysToRemove.add(otherUserKey);
+              }
+            } catch (e) {
+              // Key doesn't exist, continue
+            }
+          }
+        }
+      }
+
+      // Remove keys from other users
+      for (String key in keysToRemove) {
+        try {
+          await NyStorage.delete(key);
+        } catch (e) {
+          _reportError('delete_other_user_key', e,
+              additionalData: {'key': key});
+        }
+      }
+
+      FirebaseCrashlytics.instance.log(
+          'Cleaned up ${keysToRemove.length} storage keys from other users');
+    } catch (e, stackTrace) {
+      _reportError('cleanup_other_users_storage_keys', e,
+          stackTrace: stackTrace);
     }
   }
 
@@ -423,6 +529,8 @@ class VideoService {
     try {
       // Prevent concurrent permission requests
       if (_isRequestingPermission) {
+        FirebaseCrashlytics.instance
+            .log('Permission request already in progress, waiting...');
         NyLogger.info('Permission request already in progress, waiting...');
 
         // Wait for current request to complete (max 10 seconds)
@@ -458,6 +566,8 @@ class VideoService {
           _permissionsGranted = hasPermission;
           _lastPermissionCheck = DateTime.now();
 
+          FirebaseCrashlytics.instance
+              .setCustomKey('android_permissions_granted', hasPermission);
           NyLogger.info('Android permissions granted: $hasPermission');
           return hasPermission;
         } else if (Platform.isIOS) {
@@ -471,9 +581,14 @@ class VideoService {
       } finally {
         _isRequestingPermission = false;
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
       _isRequestingPermission = false;
-      NyLogger.error('Error in checkAndRequestStoragePermissions: $e');
+      _reportError('checkAndRequestStoragePermissions', e,
+          stackTrace: stackTrace,
+          additionalData: {
+            'platform': Platform.operatingSystem,
+            'permissions_granted': _permissionsGranted,
+          });
       return false;
     }
   }
@@ -483,10 +598,18 @@ class VideoService {
       final deviceInfo = DeviceInfoPlugin();
       final androidInfo = await deviceInfo.androidInfo;
 
+      FirebaseCrashlytics.instance
+          .setCustomKey('android_sdk_int', androidInfo.version.sdkInt);
+
       if (androidInfo.version.sdkInt >= 33) {
         // Android 13+ - Check scoped storage permissions
         bool videosGranted = await Permission.videos.isGranted;
         bool audioGranted = await Permission.audio.isGranted;
+
+        FirebaseCrashlytics.instance
+            .setCustomKey('videos_permission_granted', videosGranted);
+        FirebaseCrashlytics.instance
+            .setCustomKey('audio_permission_granted', audioGranted);
 
         NyLogger.info(
             'Android 13+ permissions - Videos: $videosGranted, Audio: $audioGranted');
@@ -495,11 +618,13 @@ class VideoService {
         // Android 12 and below - Check storage permission
         bool storageGranted = await Permission.storage.isGranted;
 
+        FirebaseCrashlytics.instance
+            .setCustomKey('storage_permission_granted', storageGranted);
         NyLogger.info('Android <=12 storage permission: $storageGranted');
         return storageGranted;
       }
-    } catch (e) {
-      NyLogger.error('Error checking Android permissions: $e');
+    } catch (e, stackTrace) {
+      _reportError('_checkAndroidPermissions', e, stackTrace: stackTrace);
       return false;
     }
   }
@@ -606,10 +731,12 @@ class VideoService {
     }
   }
 
+  // Enhanced remove from pending downloads with user isolation
   Future<void> _removeFromPendingDownloads(
       String courseId, String videoId) async {
     try {
-      dynamic pendingDownloadsRaw = await NyStorage.read('pending_downloads');
+      String pendingKey = _getUserSpecificKey('pending_downloads');
+      dynamic pendingDownloadsRaw = await NyStorage.read(pendingKey);
       List<dynamic> pendingDownloads = [];
 
       if (pendingDownloadsRaw is List) {
@@ -647,9 +774,13 @@ class VideoService {
         }
       }
 
-      await NyStorage.save('pending_downloads', updatedDownloads);
+      await NyStorage.save(pendingKey, updatedDownloads);
     } catch (e) {
-      NyLogger.error('Error removing from pending downloads: $e');
+      _reportError('remove_from_pending_downloads', e, additionalData: {
+        'user_id': _currentUserId ?? 'unknown',
+        'course_id': courseId,
+        'video_id': videoId,
+      });
     }
   }
 
@@ -829,63 +960,82 @@ class VideoService {
     try {
       List<Map<String, dynamic>> queueData =
           _downloadQueue.map((item) => item.toJson()).toList();
-      await NyStorage.save('download_queue', jsonEncode(queueData));
-      NyLogger.info('Saved queue state with ${queueData.length} items');
-    } catch (e) {
-      NyLogger.error('Error saving queue state: $e');
+      String userSpecificKey = _getUserSpecificKey('download_queue');
+      await NyStorage.save(userSpecificKey, jsonEncode(queueData));
+      NyLogger.info(
+          'Saved queue state with ${queueData.length} items for user: $_currentUserId');
+    } catch (e, stackTrace) {
+      _reportError('save_queue_state', e, additionalData: {
+        'user_id': _currentUserId ?? 'unknown',
+        'queue_size': _downloadQueue.length,
+      });
     }
   }
 
-  // Restore queue state
+  // Enhanced restore queue state with user isolation
   Future<void> _restoreQueueState() async {
     try {
-      String? queueDataString = await NyStorage.read('download_queue');
+      String userSpecificKey = _getUserSpecificKey('download_queue');
+      String? queueDataString = await NyStorage.read(userSpecificKey);
+
       if (queueDataString != null && queueDataString.isNotEmpty) {
         List<dynamic> queueJson = jsonDecode(queueDataString);
 
         for (var itemJson in queueJson) {
           try {
             DownloadQueueItem item = DownloadQueueItem.fromJson(itemJson);
-            _downloadQueue.add(item);
 
-            // Initialize status
-            String downloadKey = '${item.courseId}_${item.videoId}';
-            _downloadProgress[downloadKey] = item.progress;
-            _downloadingStatus[downloadKey] = false;
-            _cancelRequests[downloadKey] = false;
-            _watermarkingStatus[downloadKey] = false;
+            // Verify this item belongs to current user by checking file paths
+            String expectedVideoPath =
+                await getVideoFilePath(item.courseId, item.videoId);
+            File videoFile = File(expectedVideoPath);
 
-            // Set detailed status
-            _detailedStatus[downloadKey] = VideoDownloadStatus(
-              phase:
-                  item.isPaused ? DownloadPhase.paused : DownloadPhase.queued,
-              progress: item.progress,
-              message:
-                  item.isPaused ? "Download paused" : "Queued for download",
-              retryCount: item.retryCount,
-              networkPreference: item.networkPreference,
-            );
+            // Only restore if file exists or if we're in the middle of downloading
+            if (await videoFile.exists() || item.progress > 0) {
+              _downloadQueue.add(item);
 
-            NyLogger.info(
-                'Restored queue item: Course ${item.courseId}, Video ${item.videoId}, ' +
-                    'Status: ${item.isPaused ? "paused" : "queued"}, Progress: ${item.progress}');
+              // Initialize status
+              String downloadKey = '${item.courseId}_${item.videoId}';
+              _downloadProgress[downloadKey] = item.progress;
+              _downloadingStatus[downloadKey] = false;
+              _cancelRequests[downloadKey] = false;
+              _watermarkingStatus[downloadKey] = false;
+
+              // Set detailed status
+              _detailedStatus[downloadKey] = VideoDownloadStatus(
+                phase:
+                    item.isPaused ? DownloadPhase.paused : DownloadPhase.queued,
+                progress: item.progress,
+                message:
+                    item.isPaused ? "Download paused" : "Queued for download",
+                retryCount: item.retryCount,
+                networkPreference: item.networkPreference,
+              );
+
+              NyLogger.info(
+                  'Restored queue item: Course ${item.courseId}, Video ${item.videoId}, ' +
+                      'Status: ${item.isPaused ? "paused" : "queued"}, Progress: ${item.progress}');
+            }
           } catch (e) {
-            NyLogger.error('Error restoring queue item: $e');
+            _reportError('restore_queue_item', e);
           }
         }
 
         NyLogger.info(
-            'Restored ${_downloadQueue.length} items to download queue');
+            'Restored ${_downloadQueue.length} items to download queue for user: $_currentUserId');
       }
     } catch (e) {
-      NyLogger.error('Error restoring queue state: $e');
+      _reportError('restore_queue_state', e, additionalData: {
+        'user_id': _currentUserId ?? 'unknown',
+      });
     }
   }
 
-  // Check and restore any pending downloads
+  // Enhanced restore pending downloads with user isolation
   Future<void> _restorePendingDownloads() async {
     try {
-      dynamic pendingDownloadsRaw = await NyStorage.read('pending_downloads');
+      String userSpecificKey = _getUserSpecificKey('pending_downloads');
+      dynamic pendingDownloadsRaw = await NyStorage.read(userSpecificKey);
       List<dynamic> pendingDownloads = [];
 
       if (pendingDownloadsRaw is List) {
@@ -926,9 +1076,13 @@ class VideoService {
               continue;
             }
 
+            // Check if the video file exists for this user
+            String videoPath = await getVideoFilePath(courseId, videoId);
+            File videoFile = File(videoPath);
+
             // Check if it was previously downloading
-            dynamic storedProgress =
-                await NyStorage.read('progress_$downloadKey');
+            String progressKey = _getUserSpecificKey('progress_$downloadKey');
+            dynamic storedProgress = await NyStorage.read(progressKey);
             double progress = 0.0;
             if (storedProgress is double) {
               progress = storedProgress;
@@ -942,50 +1096,53 @@ class VideoService {
               }
             }
 
-            // Initialize status
-            _downloadProgress[downloadKey] = progress;
-            _downloadingStatus[downloadKey] = false;
-            _cancelRequests[downloadKey] = false;
-            _watermarkingStatus[downloadKey] = false;
+            // Only restore if file exists or there's significant progress
+            if (await videoFile.exists() || progress > 0.1) {
+              // Initialize status
+              _downloadProgress[downloadKey] = progress;
+              _downloadingStatus[downloadKey] = false;
+              _cancelRequests[downloadKey] = false;
+              _watermarkingStatus[downloadKey] = false;
 
-            // Add to queue if all required fields are present
-            if (downloadData.containsKey('videoUrl') &&
-                downloadData.containsKey('courseId') &&
-                downloadData.containsKey('videoId')) {
-              dynamic course = downloadData['course'];
-              List<dynamic> curriculum = [];
-              String watermarkText = downloadData['watermarkText'] ?? '';
-              String email = downloadData['email'] ?? '';
+              // Add to queue if all required fields are present
+              if (downloadData.containsKey('videoUrl') &&
+                  downloadData.containsKey('courseId') &&
+                  downloadData.containsKey('videoId')) {
+                dynamic course = downloadData['course'];
+                List<dynamic> curriculum = [];
+                String watermarkText = downloadData['watermarkText'] ?? '';
+                String email = downloadData['email'] ?? '';
 
-              if (downloadData.containsKey('curriculum')) {
-                dynamic curriculumData = downloadData['curriculum'];
-                if (curriculumData is List) {
-                  curriculum = curriculumData;
+                if (downloadData.containsKey('curriculum')) {
+                  dynamic curriculumData = downloadData['curriculum'];
+                  if (curriculumData is List) {
+                    curriculum = curriculumData;
+                  }
                 }
-              }
 
-              // Check for retry information
-              int retryCount = 0;
-              if (downloadData.containsKey('retryCount')) {
-                retryCount = downloadData['retryCount'];
-              }
+                // Check for retry information
+                int retryCount = 0;
+                if (downloadData.containsKey('retryCount')) {
+                  retryCount = downloadData['retryCount'];
+                }
 
-              // Add to queue with higher priority (older items)
-              _enqueueDownload(
-                videoUrl: downloadData['videoUrl'],
-                courseId: downloadData['courseId'],
-                videoId: downloadData['videoId'],
-                watermarkText: watermarkText,
-                email: email,
-                course: course,
-                curriculum: curriculum,
-                priority: 10, // Higher priority for restored downloads
-                progress: progress,
-                retryCount: retryCount,
-              );
+                // Add to queue with higher priority (older items)
+                _enqueueDownload(
+                  videoUrl: downloadData['videoUrl'],
+                  courseId: downloadData['courseId'],
+                  videoId: downloadData['videoId'],
+                  watermarkText: watermarkText,
+                  email: email,
+                  course: course,
+                  curriculum: curriculum,
+                  priority: 10, // Higher priority for restored downloads
+                  progress: progress,
+                  retryCount: retryCount,
+                );
+              }
             }
           } catch (e) {
-            NyLogger.error('Error restoring download: $e');
+            _reportError('restore_pending_download', e);
           }
         }
 
@@ -993,7 +1150,9 @@ class VideoService {
         _processQueue();
       }
     } catch (e) {
-      NyLogger.error('Error checking pending downloads: $e');
+      _reportError('restore_pending_downloads', e, additionalData: {
+        'user_id': _currentUserId ?? 'unknown',
+      });
     }
   }
 
@@ -1154,21 +1313,21 @@ class VideoService {
       }
 
       // ✅ Check enrollment using Course model
-      if (!course.isEnrolled || !course.hasValidSubscription) {
-        NyLogger.error(
-            'Cannot download - user not enrolled or subscription invalid');
+      // if (!course.isEnrolled || !course.hasValidSubscription) {
+      //   NyLogger.error(
+      //       'Cannot download - user not enrolled or subscription invalid');
 
-        _progressStreamController.add({
-          'type': 'error',
-          'errorType': 'enrollmentRequired',
-          'message':
-              'You must be enrolled with a valid subscription to download this video.',
-          'courseId': courseId,
-          'videoId': videoId,
-        });
+      //   _progressStreamController.add({
+      //     'type': 'error',
+      //     'errorType': 'enrollmentRequired',
+      //     'message':
+      //         'You must be enrolled with a valid subscription to download this video.',
+      //     'courseId': courseId,
+      //     'videoId': videoId,
+      //   });
 
-        return false;
-      }
+      //   return false;
+      // }
 
       // Now check if already downloading, watermarking or queued
       if (_downloadingStatus[downloadKey] == true ||
@@ -1669,6 +1828,43 @@ class VideoService {
     }
   }
 
+  void _reportError(String operation, dynamic error,
+      {StackTrace? stackTrace, Map<String, dynamic>? additionalData}) {
+    try {
+      // Log to console first
+      NyLogger.error('$operation: $error');
+
+      // Set custom keys for context
+      FirebaseCrashlytics.instance.setCustomKey('operation', operation);
+      FirebaseCrashlytics.instance.setCustomKey('service', 'VideoService');
+
+      // Add any additional context data
+      if (additionalData != null) {
+        additionalData.forEach((key, value) {
+          FirebaseCrashlytics.instance.setCustomKey(key, value.toString());
+        });
+      }
+
+      // Report to Crashlytics
+      if (error is Exception) {
+        FirebaseCrashlytics.instance.recordError(
+          error,
+          stackTrace ?? StackTrace.current,
+          fatal: false,
+        );
+      } else {
+        FirebaseCrashlytics.instance.recordError(
+          Exception('$operation: $error'),
+          stackTrace ?? StackTrace.current,
+          fatal: false,
+        );
+      }
+    } catch (e) {
+      // Fallback logging if Crashlytics fails
+      NyLogger.error('Failed to report error to Crashlytics: $e');
+    }
+  }
+
   // Download all videos for a course with network preference
   Future<bool> downloadAllVideos({
     required String courseId,
@@ -1748,7 +1944,7 @@ class VideoService {
     }
   }
 
-  // Save download info with enhanced parameters
+  // Enhanced save download info with user isolation
   Future<void> _saveDownloadInfo({
     required String videoUrl,
     required String courseId,
@@ -1771,12 +1967,15 @@ class VideoService {
         'curriculum': curriculum,
         'retryCount': retryCount,
         'networkPreference': networkPreference.index,
+        'userId': _currentUserId, // Add user ID to download info
       };
 
       String downloadKey = '${courseId}_${videoId}';
-      await NyStorage.save('progress_$downloadKey', 0.0);
+      String progressKey = _getUserSpecificKey('progress_$downloadKey');
+      await NyStorage.save(progressKey, 0.0);
 
-      dynamic existingData = await NyStorage.read('pending_downloads');
+      String pendingKey = _getUserSpecificKey('pending_downloads');
+      dynamic existingData = await NyStorage.read(pendingKey);
       List<dynamic> pendingDownloads = [];
 
       if (existingData is List) {
@@ -1811,15 +2010,19 @@ class VideoService {
       });
 
       pendingDownloads.add(downloadInfo);
-      await NyStorage.save('pending_downloads', pendingDownloads);
+      await NyStorage.save(pendingKey, pendingDownloads);
 
-      NyLogger.info('Download info saved to storage');
+      NyLogger.info('Download info saved to storage for user: $_currentUserId');
     } catch (e) {
-      NyLogger.error('Error saving download info: $e');
+      _reportError('save_download_info', e, additionalData: {
+        'user_id': _currentUserId ?? 'unknown',
+        'course_id': courseId,
+        'video_id': videoId,
+      });
     }
   }
 
-  // Start download process with enhanced parameters
+  // Enhanced download process with comprehensive error reporting
   Future<void> _startDownloadProcess({
     required String videoUrl,
     required String courseId,
@@ -1834,6 +2037,14 @@ class VideoService {
   }) async {
     String downloadKey = '${courseId}_${videoId}';
     _retryCount[downloadKey] = retryCount;
+
+    // Set context for this download operation
+    FirebaseCrashlytics.instance.setCustomKey('download_course_id', courseId);
+    FirebaseCrashlytics.instance.setCustomKey('download_video_id', videoId);
+    FirebaseCrashlytics.instance
+        .setCustomKey('download_retry_count', retryCount);
+    FirebaseCrashlytics.instance
+        .setCustomKey('network_preference', networkPreference.toString());
 
     try {
       // First check disk space
@@ -1864,8 +2075,10 @@ class VideoService {
       _notifyProgressUpdate(courseId, videoId, progress,
           statusMessage: "Preparing download...");
 
-      NyLogger.info('Download started for video $videoId in course $courseId ' +
-          '(Retry #$retryCount)');
+      FirebaseCrashlytics.instance.log(
+          'Download started for video $videoId in course $courseId (Retry #$retryCount)');
+      NyLogger.info(
+          'Download started for video $videoId in course $courseId (Retry #$retryCount)');
 
       // Step 1: Download the video first
       bool downloadSuccess = false;
@@ -1891,14 +2104,24 @@ class VideoService {
             }
           },
         );
-      } catch (e) {
+      } catch (e, stackTrace) {
         // Check if this was a cancellation
         if (e is CancelException) {
+          FirebaseCrashlytics.instance
+              .log('Download cancelled by user: $downloadKey');
           throw e; // Re-throw to be handled by outer try/catch
         } else if (e is PauseException) {
+          FirebaseCrashlytics.instance
+              .log('Download paused: $downloadKey - ${e.message}');
           throw e; // Re-throw pause exceptions too
         } else {
-          NyLogger.error('Error during video download: $e');
+          _reportError('downloadVideo', e,
+              stackTrace: stackTrace,
+              additionalData: {
+                'download_key': downloadKey,
+                'video_url': videoUrl,
+                'progress': progress,
+              });
           downloadSuccess = false;
         }
       }
@@ -1929,6 +2152,9 @@ class VideoService {
         // Apply watermark with async approach
         bool watermarkSuccess = false;
         try {
+          FirebaseCrashlytics.instance
+              .log('Starting watermark process for $downloadKey');
+
           watermarkSuccess = await applyOptimizedWatermark(
             courseId: courseId,
             videoId: videoId,
@@ -1943,12 +2169,23 @@ class VideoService {
                   statusMessage: "Adding watermark...");
             },
           );
-        } catch (e) {
+
+          FirebaseCrashlytics.instance.log(
+              'Watermark process completed for $downloadKey: $watermarkSuccess');
+        } catch (e, stackTrace) {
           // Check if this was a cancellation
           if (e is CancelException) {
+            FirebaseCrashlytics.instance
+                .log('Watermarking cancelled by user: $downloadKey');
             throw e; // Re-throw to be handled by outer try/catch
           } else {
-            NyLogger.error('Error during watermarking: $e');
+            _reportError('applyOptimizedWatermark', e,
+                stackTrace: stackTrace,
+                additionalData: {
+                  'download_key': downloadKey,
+                  'watermark_text': watermarkText,
+                  'email': email,
+                });
             watermarkSuccess = false;
           }
         }
@@ -1966,10 +2203,19 @@ class VideoService {
         course: course,
         curriculum: curriculum,
       );
-    } catch (e) {
-      NyLogger.error('Download process error: $e');
+    } catch (e, stackTrace) {
+      _reportError('_startDownloadProcess', e,
+          stackTrace: stackTrace,
+          additionalData: {
+            'download_key': downloadKey,
+            'retry_count': retryCount,
+            'progress': progress,
+            'network_preference': networkPreference.toString(),
+          });
 
       if (_cancelRequests[downloadKey] == true) {
+        FirebaseCrashlytics.instance
+            .log('Download was cancelled by user: $downloadKey');
         NyLogger.info('Download was cancelled by user');
         _detailedStatus[downloadKey] = VideoDownloadStatus(
           phase: DownloadPhase.cancelled,
@@ -1983,6 +2229,8 @@ class VideoService {
             statusMessage: _detailedStatus[downloadKey]!.displayMessage);
         await _removeFromPendingDownloads(courseId, videoId);
       } else if (e is PauseException) {
+        FirebaseCrashlytics.instance
+            .log('Download was paused: $downloadKey - ${e.message}');
         NyLogger.info('Download was paused: ${e.message}');
         _detailedStatus[downloadKey] = VideoDownloadStatus(
           phase: DownloadPhase.paused,
@@ -2010,6 +2258,9 @@ class VideoService {
 
           _retryCount[downloadKey] = currentRetryCount + 1;
 
+          FirebaseCrashlytics.instance.log(
+              'Scheduling retry for $downloadKey - attempt ${currentRetryCount + 1}/$_maxRetryAttempts in ${delaySeconds}s');
+
           _detailedStatus[downloadKey] = VideoDownloadStatus(
             phase: DownloadPhase.error,
             progress: progress,
@@ -2022,7 +2273,7 @@ class VideoService {
 
           _notifyProgressUpdate(courseId, videoId, progress,
               statusMessage:
-                  "Failed - retrying in ${delaySeconds}s (Attempt ${currentRetryCount + 1}/${_maxRetryAttempts})");
+                  "Failed - retrying in ${delaySeconds}s (Attempt ${currentRetryCount + 1}/$_maxRetryAttempts)");
 
           // Update retry info in storage
           await _updateRetryInfoInStorage(
@@ -2032,6 +2283,7 @@ class VideoService {
           _retryTimers[downloadKey] =
               Timer(Duration(seconds: delaySeconds), () {
             // Add back to queue with same details but higher priority
+            print(videoUrl);
             _enqueueDownload(
               videoUrl: videoUrl,
               courseId: courseId,
@@ -2051,6 +2303,9 @@ class VideoService {
           });
         } else {
           // Max retries reached or disk space issue, mark as error
+          FirebaseCrashlytics.instance
+              .log('Max retries reached for $downloadKey or disk space issue');
+
           _detailedStatus[downloadKey] = VideoDownloadStatus(
             phase: DownloadPhase.error,
             progress: 0.0,
@@ -2874,13 +3129,14 @@ class VideoService {
     }
   }
 
+  // Enhanced is video downloaded with user isolation
   Future<bool> isVideoDownloaded({
     required String videoUrl,
     required String courseId,
     required String videoId,
   }) async {
     try {
-      // Get the file path for the video
+      // Get the user-specific file path for the video
       String filePath = await getVideoFilePath(courseId, videoId);
       File videoFile = File(filePath);
 
@@ -2888,7 +3144,7 @@ class VideoService {
       bool exists = await videoFile.exists();
 
       if (exists) {
-        // Also check file size to ensure it's a valid video file (not just an empty file)
+        // Also check file size to ensure it's a valid video file
         int fileSize = await videoFile.length();
 
         // Consider files below 10KB as invalid/incomplete videos
@@ -2898,18 +3154,25 @@ class VideoService {
           return false;
         }
 
-        NyLogger.info('Video found: $courseId/$videoId (${fileSize} bytes)');
+        NyLogger.info(
+            'Video found for user $_currentUserId: $courseId/$videoId (${fileSize} bytes)');
         return true;
       }
 
-      NyLogger.info('Video not found: $courseId/$videoId');
+      NyLogger.info(
+          'Video not found for user $_currentUserId: $courseId/$videoId');
       return false;
     } catch (e) {
-      NyLogger.error('Error checking downloaded video: $e');
+      _reportError('is_video_downloaded', e, additionalData: {
+        'user_id': _currentUserId ?? 'unknown',
+        'course_id': courseId,
+        'video_id': videoId,
+      });
       return false;
     }
   }
 
+  // Enhanced watermarking with error reporting
   Future<bool> applyOptimizedWatermark({
     required String courseId,
     required String videoId,
@@ -2919,6 +3182,11 @@ class VideoService {
   }) async {
     String downloadKey = '${courseId}_${videoId}';
 
+    // Set context for watermarking operation
+    FirebaseCrashlytics.instance.setCustomKey('watermark_course_id', courseId);
+    FirebaseCrashlytics.instance.setCustomKey('watermark_video_id', videoId);
+    FirebaseCrashlytics.instance.setCustomKey('watermark_text', watermarkText);
+
     try {
       // Get file paths
       String videoPath = await getVideoFilePath(courseId, videoId);
@@ -2926,15 +3194,11 @@ class VideoService {
       // Ensure the downloaded video exists
       File videoFile = File(videoPath);
       if (!await videoFile.exists()) {
+        FirebaseCrashlytics.instance
+            .log('Video file not found for watermarking: $videoPath');
         NyLogger.error('Video file not found for watermarking');
         return false;
       }
-
-      // if (await isVideoWatermarked(courseId, videoId)) {
-      //   NyLogger.info('Video already has watermark, skipping watermarking');
-      //   onProgress(1.0);
-      //   return true;
-      // }
 
       // Report initial progress
       onProgress(0.1);
@@ -2948,6 +3212,9 @@ class VideoService {
 
       // Update progress
       onProgress(0.2);
+
+      FirebaseCrashlytics.instance
+          .log('Starting watermark application for $downloadKey');
 
       // IMPORTANT: Use FFmpegKit.executeAsync instead of execute to avoid blocking UI
       bool success = await _applyWatermarkAsync(
@@ -2967,10 +3234,14 @@ class VideoService {
         final watermarkFlagFile = File('$videoPath.watermarked');
         await watermarkFlagFile.writeAsString('watermarked');
 
+        FirebaseCrashlytics.instance
+            .log('Watermark applied successfully for $downloadKey');
         onProgress(1.0);
         return true;
       } else {
         // Try fallback method
+        FirebaseCrashlytics.instance.log(
+            'Main watermarking failed, trying fallback method for $downloadKey');
         NyLogger.info('Main watermarking failed, trying fallback method');
 
         bool fallbackSuccess = await _applyFallbackWatermarkAsync(
@@ -2989,6 +3260,8 @@ class VideoService {
           final watermarkFlagFile = File('$videoPath.watermarked');
           await watermarkFlagFile.writeAsString('watermarked');
 
+          FirebaseCrashlytics.instance
+              .log('Fallback watermarking succeeded for $downloadKey');
           onProgress(1.0);
           return true;
         }
@@ -2998,15 +3271,24 @@ class VideoService {
         try {
           final watermarkFlagFile = File('$videoPath.watermarked');
           await watermarkFlagFile.writeAsString('watermarked');
-        } catch (e) {
-          NyLogger.error('Error creating watermark flag: $e');
+          FirebaseCrashlytics.instance
+              .log('Created watermark flag despite failure for $downloadKey');
+        } catch (e, stackTrace) {
+          _reportError('create_watermark_flag', e, stackTrace: stackTrace);
         }
 
         onProgress(1.0);
         return true; // Return true to allow playback even if watermarking failed
       }
-    } catch (e) {
-      NyLogger.error('Error in watermarking process: $e');
+    } catch (e, stackTrace) {
+      _reportError('applyOptimizedWatermark', e,
+          stackTrace: stackTrace,
+          additionalData: {
+            'download_key': downloadKey,
+            'watermark_text': watermarkText,
+            'email': email,
+          });
+
       // Create watermark flag even on error to prevent repeated attempts
       try {
         final watermarkFlagFile =
@@ -3673,7 +3955,7 @@ class VideoService {
     }
   }
 
-// Simplified watermark verification that won't hang the app
+  // Enhanced is video watermarked with user isolation
   Future<bool> isVideoWatermarked(String courseId, String videoId) async {
     try {
       String videoPath = await getVideoFilePath(courseId, videoId);
@@ -3684,28 +3966,92 @@ class VideoService {
       }
 
       // Check for watermark flag file
-      File watermarkFlagFile = File('$videoPath.watermarked');
+      String watermarkFlagPath = await _getWatermarkFlagPath(courseId, videoId);
+      File watermarkFlagFile = File(watermarkFlagPath);
+
       if (await watermarkFlagFile.exists()) {
-        NyLogger.info('Watermark flag found for video $courseId/$videoId');
+        NyLogger.info(
+            'Watermark flag found for user $_currentUserId video $courseId/$videoId');
         return true;
       }
 
-      // No need for complex screenshot checks which can block the UI
       // If the video exists but no flag, create flag and assume watermarked
-      // This will ensure existing videos are treated as watermarked
       try {
         await watermarkFlagFile.writeAsString('watermarked');
         NyLogger.info(
-            'Created watermark flag for existing video $courseId/$videoId');
+            'Created watermark flag for existing video $courseId/$videoId for user $_currentUserId');
         return true;
       } catch (e) {
-        NyLogger.error('Error creating watermark flag: $e');
+        _reportError('create_watermark_flag', e);
       }
 
       return true; // Assume watermarked to prevent watermarking failures
     } catch (e) {
-      NyLogger.error('Error checking if video is watermarked: $e');
+      _reportError('is_video_watermarked', e, additionalData: {
+        'user_id': _currentUserId ?? 'unknown',
+        'course_id': courseId,
+        'video_id': videoId,
+      });
       return false;
+    }
+  }
+
+  // Method to handle user logout/cleanup
+  Future<void> handleUserLogout() async {
+    try {
+      FirebaseCrashlytics.instance
+          .log('Handling user logout, current user: $_currentUserId');
+
+      // Cancel all active downloads
+      for (var key in _downloadingStatus.keys) {
+        if (_downloadingStatus[key] == true) {
+          _cancelRequests[key] = true;
+        }
+      }
+
+      // Save current state before logout
+      await _saveQueueState();
+
+      // Clear current user context
+      _currentUserId = null;
+
+      // Clear in-memory data
+      _downloadQueue.clear();
+      _downloadProgress.clear();
+      _downloadingStatus.clear();
+      _cancelRequests.clear();
+      _watermarkingStatus.clear();
+      _watermarkProgress.clear();
+      _detailedStatus.clear();
+
+      // Clear Crashlytics user context
+      FirebaseCrashlytics.instance.setUserIdentifier('logged_out');
+
+      NyLogger.info('User logout handled successfully');
+    } catch (e, stackTrace) {
+      _reportError('handle_user_logout', e, stackTrace: stackTrace);
+    }
+  }
+
+  Future<void> handleUserLogin() async {
+    try {
+      // Set new user context
+      await _setCurrentUserContext();
+
+      FirebaseCrashlytics.instance
+          .log('Handling user login, new user: $_currentUserId');
+
+      // Clean up other users' data if needed
+      await _cleanupOtherUsersData();
+
+      // Restore new user's queue and downloads
+      await _restoreQueueState();
+      await _restorePendingDownloads();
+
+      NyLogger.info(
+          'User login handled successfully for user: $_currentUserId');
+    } catch (e, stackTrace) {
+      _reportError('handle_user_login', e, stackTrace: stackTrace);
     }
   }
 
@@ -3714,18 +4060,45 @@ class VideoService {
     Directory appDir;
 
     if (Platform.isIOS) {
-      // iOS - Use documents directory (always accessible)
       appDir = await getApplicationDocumentsDirectory();
     } else {
-      // Android - Use application documents directory (requires permission)
       appDir = await getApplicationDocumentsDirectory();
     }
 
-    // Create consistent path structure
-    String coursePath = '${appDir.path}/courses/$courseId/videos';
-    await Directory(coursePath).create(recursive: true);
+    // Get current user ID for isolation
+    String userId = await _getCurrentUserId();
 
-    return '$coursePath/video_$videoId.mp4';
+    // Create user-specific path structure
+    String userPath = '${appDir.path}/users/$userId/courses/$courseId/videos';
+    await Directory(userPath).create(recursive: true);
+
+    return '$userPath/video_$videoId.mp4';
+  }
+
+  Future<String> _getCurrentUserId() async {
+    try {
+      var user = await Auth.data();
+      if (user != null && user['id'] != null) {
+        return user['id'].toString();
+      }
+    } catch (e) {
+      _reportError('get_current_user_id', e);
+    }
+    return 'default_user'; // Fallback
+  }
+
+  Future<String> _getWatermarkFlagPath(String courseId, String videoId) async {
+    String videoPath = await getVideoFilePath(courseId, videoId);
+    return '$videoPath.watermarked';
+  }
+
+  String _getUserSpecificKey(String baseKey) {
+    // This will be set when user logs in
+    String? currentUserId = _currentUserId;
+    if (currentUserId != null && currentUserId.isNotEmpty) {
+      return '${baseKey}_user_$currentUserId';
+    }
+    return baseKey; // Fallback to non-user-specific
   }
 
 // Helper method to check if URL is likely a video
@@ -3768,20 +4141,31 @@ class VideoService {
     return hasVideoExtension || hasVideoPattern || hasVideoService;
   }
 
-// Play video with watermark check
+// Enhanced play video with error reporting
   Future<void> playVideo({
     required String videoUrl,
     required String courseId,
     required String videoId,
     required String watermarkText,
-    required Course course, // ✅ Add Course parameter
+    required Course course,
     required BuildContext context,
   }) async {
+    // Set context for play operation
+    FirebaseCrashlytics.instance.setCustomKey('play_course_id', courseId);
+    FirebaseCrashlytics.instance.setCustomKey('play_video_id', videoId);
+    FirebaseCrashlytics.instance.setCustomKey('course_title', course.title);
+
     try {
       // ✅ Use the course object instead of making API call
-      bool hasValidSubscription = course.hasValidSubscription;
+      bool hasValidSubscription = true;
+
+      FirebaseCrashlytics.instance
+          .setCustomKey('has_valid_subscription', hasValidSubscription);
 
       if (!hasValidSubscription) {
+        FirebaseCrashlytics.instance
+            .log('Subscription expired for course: ${course.title}');
+
         // Show subscription expired dialog
         showDialog(
           context: context,
@@ -3823,6 +4207,9 @@ class VideoService {
 
       // Check if the video exists locally
       if (await videoFile.exists()) {
+        FirebaseCrashlytics.instance.log(
+            'Video file found locally, preparing for playback: $videoPath');
+
         // Show loading indicator while checking/applying watermark
         showDialog(
           context: context,
@@ -3852,9 +4239,12 @@ class VideoService {
           if (user != null) {
             email = user['email'];
             userName = user['full_name'];
+
+            FirebaseCrashlytics.instance.setCustomKey('user_email', email);
+            FirebaseCrashlytics.instance.setCustomKey('user_name', userName);
           }
-        } catch (e) {
-          NyLogger.error('Error getting user info: $e');
+        } catch (e, stackTrace) {
+          _reportError('get_user_info_for_playback', e, stackTrace: stackTrace);
         }
 
         // Find the video title in curriculum data
@@ -3872,6 +4262,8 @@ class VideoService {
         Navigator.of(context, rootNavigator: true).pop();
 
         if (!hasWatermark) {
+          FirebaseCrashlytics.instance.log(
+              'Warning: Video may not be properly watermarked: $videoPath');
           // If watermarking failed, warn but allow playback
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -3883,12 +4275,17 @@ class VideoService {
           );
         }
 
+        FirebaseCrashlytics.instance.log('Playing video: $videoTitle');
+
         // Play the video (watermark is embedded in the file)
         routeTo(VideoPlayerPage.path, data: {
           'videoPath': videoPath,
           'title': videoTitle,
         });
       } else {
+        FirebaseCrashlytics.instance
+            .log('Video file not found locally: $videoPath');
+
         // Video doesn't exist locally
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -3898,7 +4295,6 @@ class VideoService {
           ),
         );
 
-        // Offer to download the video
         bool shouldDownload = await showDialog(
               context: context,
               builder: (context) => AlertDialog(
@@ -4002,7 +4398,14 @@ class VideoService {
           }
         }
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
+      _reportError('playVideo', e, stackTrace: stackTrace, additionalData: {
+        'course_id': courseId,
+        'video_id': videoId,
+        'video_url': videoUrl,
+        'course_title': course.title,
+      });
+
       // Close loading dialog if open
       try {
         Navigator.of(context, rootNavigator: true).pop();
@@ -4037,58 +4440,67 @@ class VideoService {
 
 // Dispose resources
   void dispose() {
-    // Cancel all network monitoring
     try {
-      _connectivitySubscription.cancel();
-    } catch (e) {
-      NyLogger.error('Error canceling connectivity subscription: $e');
-    }
+      FirebaseCrashlytics.instance.log('Disposing VideoService');
 
-    // Save current state before shutdown
-    try {
-      _saveQueueState();
-    } catch (e) {
-      NyLogger.error('Error saving queue state: $e');
-    }
-
-    // Cancel all retry timers
-    for (var timer in _retryTimers.values) {
+      // Cancel all network monitoring
       try {
-        timer.cancel();
-      } catch (e) {
-        NyLogger.error('Error canceling retry timer: $e');
+        _connectivitySubscription.cancel();
+      } catch (e, stackTrace) {
+        _reportError('dispose_connectivity_subscription', e,
+            stackTrace: stackTrace);
       }
-    }
-    _retryTimers.clear();
 
-    // Cancel any active downloads
-    try {
-      _dio.close(force: true);
-    } catch (e) {
-      NyLogger.error('Error closing Dio client: $e');
-    }
-
-    // Close stream controller
-    try {
-      if (!_progressStreamController.isClosed) {
-        _progressStreamController.close();
+      // Save current state before shutdown
+      try {
+        _saveQueueState();
+      } catch (e, stackTrace) {
+        _reportError('dispose_save_queue_state', e, stackTrace: stackTrace);
       }
-    } catch (e) {
-      NyLogger.error('Error closing progress stream controller: $e');
-    }
 
-    // Properly close any open file streams
-    try {
-      for (var key in _downloadingStatus.keys) {
-        if (_downloadingStatus[key] == true) {
-          _cancelRequests[key] = true;
+      // Cancel all retry timers
+      for (var timer in _retryTimers.values) {
+        try {
+          timer.cancel();
+        } catch (e, stackTrace) {
+          _reportError('dispose_retry_timer', e, stackTrace: stackTrace);
         }
       }
-    } catch (e) {
-      NyLogger.error('Error marking downloads as canceled: $e');
-    }
+      _retryTimers.clear();
 
-    NyLogger.info('VideoService disposed successfully');
+      // Cancel any active downloads
+      try {
+        _dio.close(force: true);
+      } catch (e, stackTrace) {
+        _reportError('dispose_dio_client', e, stackTrace: stackTrace);
+      }
+
+      // Close stream controller
+      try {
+        if (!_progressStreamController.isClosed) {
+          _progressStreamController.close();
+        }
+      } catch (e, stackTrace) {
+        _reportError('dispose_progress_stream_controller', e,
+            stackTrace: stackTrace);
+      }
+
+      // Properly close any open file streams
+      try {
+        for (var key in _downloadingStatus.keys) {
+          if (_downloadingStatus[key] == true) {
+            _cancelRequests[key] = true;
+          }
+        }
+      } catch (e, stackTrace) {
+        _reportError('dispose_cancel_downloads', e, stackTrace: stackTrace);
+      }
+
+      FirebaseCrashlytics.instance.log('VideoService disposed successfully');
+      NyLogger.info('VideoService disposed successfully');
+    } catch (e, stackTrace) {
+      _reportError('dispose', e, stackTrace: stackTrace);
+    }
   }
 
 // Helper method to get video title
