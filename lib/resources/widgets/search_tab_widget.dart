@@ -391,7 +391,7 @@ class _SearchTabState extends NyState<SearchTab> {
     try {
       var courseApiService = CourseApiService();
       List<dynamic> enrollmentsData = await courseApiService
-          .getEnrollments(refresh: false)
+          .getEnrollments(refresh: true)
           .timeout(Duration(seconds: 10));
 
       if (enrollmentsData.isNotEmpty) {
@@ -891,7 +891,7 @@ class _SearchTabState extends NyState<SearchTab> {
                             fontWeight: FontWeight.bold,
                             fontSize: 14,
                           ),
-                          maxLines: 2,
+                          maxLines: 3,
                           overflow: TextOverflow.ellipsis,
                         ),
                         SizedBox(height: 4),
@@ -916,11 +916,13 @@ class _SearchTabState extends NyState<SearchTab> {
                         SizedBox(height: 4),
                         Row(
                           children: [
-                            Text(
-                              course.categoryName,
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Colors.grey.shade700,
+                            Flexible(
+                              child: Text(
+                                course.categoryName,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey.shade700,
+                                ),
                               ),
                             ),
                             if (course.id == 7)

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_app/app/services/video_service.dart';
@@ -34,20 +35,45 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
   Course? _previousCourse;
   String? _previousSubscriptionStatus;
   DateTime? _previousExpiryDate;
+  DateTime? _paymentStartTime;
+  Timer? _paymentTimeoutTimer;
 
+  bool _isCreatingOrder = false;
+  bool _isVerifyingPayment = false;
+  bool _isCompletingEnrollment = false;
+  String _currentLoadingMessage = "";
+
+  // ✅ NEW: Store order details
+  Map<String, dynamic>? _currentOrderDetails;
+  String? _currentOrderId;
+
+  bool get _isAnyProcessActive =>
+      _isCreatingOrder ||
+      _isProcessingPayment ||
+      _isVerifyingPayment ||
+      _isCompletingEnrollment;
   @override
   void initState() {
     super.initState();
 
-    _razorpay = Razorpay();
-    _razorpay.on(Razorpay.EVENT_PAYMENT_SUCCESS, _handlePaymentSuccess);
-    _razorpay.on(Razorpay.EVENT_PAYMENT_ERROR, _handlePaymentError);
-    _razorpay.on(Razorpay.EVENT_EXTERNAL_WALLET, _handleExternalWallet);
+    try {
+      _razorpay = Razorpay();
+      _razorpay.on(Razorpay.EVENT_PAYMENT_SUCCESS, _handlePaymentSuccess);
+      _razorpay.on(Razorpay.EVENT_PAYMENT_ERROR, _handlePaymentError);
+      _razorpay.on(Razorpay.EVENT_EXTERNAL_WALLET, _handleExternalWallet);
+    } catch (e) {
+      NyLogger.error('Error initializing Razorpay: $e');
+    }
   }
 
   @override
   void dispose() {
-    _razorpay.clear();
+    try {
+      _paymentTimeoutTimer?.cancel();
+      _razorpay.clear();
+    } catch (e) {
+      NyLogger.error('Error disposing Razorpay: $e');
+    }
     super.dispose();
   }
 
@@ -163,6 +189,26 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
       NyLogger.error('Error fetching curriculum: $e');
       curriculumItems = [];
     }
+  }
+
+  // void _forceResetPaymentState() {
+  //   if (mounted) {
+  //     setState(() {
+  //       _isProcessingPayment = false;
+  //       _paymentStartTime = null;
+  //       _currentOrderDetails = null;
+  //       _currentOrderId = null;
+  //     });
+  //     _paymentTimeoutTimer?.cancel();
+  //   }
+  // }
+
+  String _getCurrentLoadingText() {
+    if (_isCreatingOrder) return "Creating order...";
+    if (_isProcessingPayment) return "Processing...";
+    if (_isVerifyingPayment) return "Verifying...";
+    if (_isCompletingEnrollment) return "Completing...";
+    return "Loading...";
   }
 
   @override
@@ -305,34 +351,7 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    Container(
-                      width: 150,
-                      height: 50,
-                      child: ElevatedButton(
-                        onPressed:
-                            _isProcessingPayment ? null : _startPaymentProcess,
-                        child: _isProcessingPayment
-                            ? CircularProgressIndicator(
-                                valueColor:
-                                    AlwaysStoppedAnimation<Color>(Colors.amber),
-                                strokeWidth: 3,
-                              )
-                            : Text(
-                                'Enroll Now',
-                                style: TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.black,
-                                ),
-                              ),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Color(0xFFEFE458),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(25),
-                          ),
-                        ),
-                      ),
-                    ),
+                    _buildEnrollButton(), // ✅ Use new enhanced button
                   ],
                 ),
               ),
@@ -461,7 +480,7 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
     );
   }
 
-  void _startPaymentProcess() {
+  void _startPaymentProcess() async {
     if (subscriptionPlans.isEmpty ||
         selectedPlanIndex >= subscriptionPlans.length) {
       showToastDanger(description: trans("No plan selected"));
@@ -469,48 +488,249 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
     }
 
     setState(() {
-      _isProcessingPayment = true;
+      _isCreatingOrder = true;
+      _isProcessingPayment = false;
+      _isVerifyingPayment = false;
+      _isCompletingEnrollment = false;
+      _currentLoadingMessage = "Creating payment order...";
+      _paymentStartTime = DateTime.now();
+    });
+    // Set up timeout timer
+    _paymentTimeoutTimer = Timer(Duration(minutes: 3), () {
+      // Extended timeout
+      if (_isAnyProcessActive && mounted) {
+        _resetAllLoadingStates();
+        showToastDanger(
+            description: "Payment process timed out. Please try again.");
+      }
     });
 
     SubscriptionPlan plan = subscriptionPlans[selectedPlanIndex];
-    NyLogger.debug('Amount in paise: ${double.parse(plan.amount) * 100}');
-    NyLogger.debug('Razorpay Key: ${getEnv('RAZORPAY_KEY_ID')}');
 
-    _getUserInfo().then((userInfo) {
+    // Validate inputs before proceeding
+    if (!_validatePaymentInputs(plan)) {
+      _resetPaymentState();
+      return;
+    }
+
+    try {
+      // ✅ STEP 1: Create order with backend first
+      NyLogger.info('🔄 Creating payment order...');
+      showLoadingDialog(trans("Creating payment order..."));
+
+      final courseApiService = CourseApiService();
+      _currentOrderDetails = await courseApiService.createPaymentOrder(
+        courseId: course!.id,
+        planType: plan.planType,
+        paymentCardId: null, // Add payment card support if needed
+      );
+
+      // Hide loading dialog
+      if (mounted && Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
+
+      _currentOrderId = _currentOrderDetails!['order_id'];
+      NyLogger.info('✅ Order created successfully: $_currentOrderId');
+
+      // ✅ STEP 2: Initialize Razorpay with backend order details
+      await _initializeRazorpayWithOrder(plan);
+    } catch (e) {
+      // Hide loading dialog if still showing
+      if (mounted && Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
+
+      _resetPaymentState();
+      NyLogger.error('❌ Order creation failed: $e');
+
+      String errorMessage = "Failed to create payment order";
+      if (e.toString().contains('already enrolled') ||
+          e.toString().contains('already have')) {
+        errorMessage = "You are already enrolled in this course";
+      } else if (e.toString().contains('Invalid plan')) {
+        errorMessage = "Invalid subscription plan selected";
+      } else if (e.toString().contains('not found')) {
+        errorMessage = "Course not found. Please try again.";
+      }
+
+      showToastDanger(description: errorMessage);
+    }
+  }
+
+  Future<void> _initializeRazorpayWithOrder(SubscriptionPlan plan) async {
+    try {
+      final userInfo = await _getUserInfo();
+
       var options = {
-        'key': getEnv('RAZORPAY_KEY_ID'),
-        'amount': (double.parse(plan.amount) * 100).toString(),
+        'key': _currentOrderDetails!['key_id'],
+        'order_id': _currentOrderDetails!['order_id'],
+        'amount': _currentOrderDetails!['amount'] * 100,
+        'currency': _currentOrderDetails!['currency'] ?? 'INR',
         'name': 'Course Enrollment',
         'description': 'Enrollment for ${course!.title}',
         'prefill': {
-          'email': userInfo['email'] ?? '',
-          'name': userInfo['name'] ?? '',
-          "contact": userInfo['phone'] ?? '',
+          'email': _currentOrderDetails!['user_info']['email'] ??
+              userInfo['email'] ??
+              '',
+          'name': _currentOrderDetails!['user_info']['name'] ??
+              userInfo['name'] ??
+              '',
+          'contact': _currentOrderDetails!['user_info']['contact'] ??
+              userInfo['phone'] ??
+              '',
         },
-        'notes': {
-          'course_id': course!.id.toString(),
-          'plan_type': plan.planType,
-        },
+        'notes': _currentOrderDetails!['notes'] ??
+            {
+              'course_id': course!.id.toString(),
+              'plan_type': plan.planType,
+            },
         'theme': {
           'color': '#EFE458',
         }
       };
 
-      try {
-        _razorpay.open(options);
-      } catch (e) {
+      NyLogger.debug('💳 Razorpay options: $options');
+      NyLogger.info('🚀 Opening Razorpay payment interface...');
+
+      // ✅ Update loading message before opening Razorpay
+      if (mounted) {
         setState(() {
-          _isProcessingPayment = false;
+          _currentLoadingMessage = "Waiting for payment...";
         });
-        showToastDanger(
-            description: "Payment initialization failed: ${e.toString()}");
       }
-    }).catchError((e) {
+
+      _razorpay.open(options);
+    } catch (e) {
+      _resetAllLoadingStates();
+      NyLogger.error('❌ Razorpay initialization error: $e');
+      showToastDanger(description: _getErrorMessage(e));
+    }
+  }
+
+  void _resetPaymentState() {
+    _paymentTimeoutTimer?.cancel();
+    if (mounted) {
       setState(() {
         _isProcessingPayment = false;
+        _paymentStartTime = null;
+        _currentOrderDetails = null;
+        _currentOrderId = null;
       });
-      showToastDanger(description: "Failed to get user info: ${e.toString()}");
-    });
+    }
+  }
+  // void _startPaymentProcess() {
+  //   if (subscriptionPlans.isEmpty ||
+  //       selectedPlanIndex >= subscriptionPlans.length) {
+  //     showToastDanger(description: trans("No plan selected"));
+  //     return;
+  //   }
+
+  //   setState(() {
+  //     _isProcessingPayment = true;
+  //     _paymentStartTime = DateTime.now();
+  //   });
+
+  //   // Set up timeout timer
+  //   _paymentTimeoutTimer = Timer(Duration(seconds: 60), () {
+  //     if (_isProcessingPayment && mounted) {
+  //       setState(() {
+  //         _isProcessingPayment = false;
+  //         _paymentStartTime = null;
+  //       });
+  //       showToastDanger(description: "Payment timed out. Please try again.");
+  //     }
+  //   });
+
+  //   SubscriptionPlan plan = subscriptionPlans[selectedPlanIndex];
+
+  //   // Validate inputs before proceeding
+  //   if (!_validatePaymentInputs(plan)) {
+  //     setState(() {
+  //       _isProcessingPayment = false;
+  //       _paymentStartTime = null;
+  //     });
+  //     _paymentTimeoutTimer?.cancel();
+  //     return;
+  //   }
+
+  //   NyLogger.debug('Amount in paise: ${double.parse(plan.amount) * 100}');
+  //   NyLogger.debug('Razorpay Key: ${getEnv('RAZORPAY_KEY_ID')}');
+
+  //   _getUserInfo().then((userInfo) {
+  //     var options = {
+  //       'key': getEnv('RAZORPAY_KEY_ID'),
+  //       'amount': (double.parse(plan.amount) * 100).toInt(),
+  //       'name': 'Course Enrollment',
+  //       'description': 'Enrollment for ${course!.title}',
+  //       'prefill': {
+  //         'email': userInfo['email'] ?? '',
+  //         'name': userInfo['name'] ?? '',
+  //         "contact": userInfo['phone'] ?? '',
+  //       },
+  //       'notes': {
+  //         'course_id': course!.id.toString(),
+  //         'plan_type': plan.planType,
+  //       },
+  //       'theme': {
+  //         'color': '#EFE458',
+  //       }
+  //     };
+
+  //     try {
+  //       _razorpay.open(options);
+  //     } catch (e) {
+  //       _paymentTimeoutTimer?.cancel();
+  //       setState(() {
+  //         _isProcessingPayment = false;
+  //         _paymentStartTime = null;
+  //       });
+
+  //       NyLogger.error('Razorpay open error: $e');
+
+  //       if (e.toString().contains('is not a subtype of type')) {
+  //         showToastDanger(
+  //             description:
+  //                 "Payment service temporarily unavailable. Please try again in a moment.");
+  //       } else if (e.toString().contains('PlatformException')) {
+  //         showToastDanger(
+  //             description:
+  //                 "Payment app not available. Please ensure you have a payment app installed.");
+  //       } else {
+  //         showToastDanger(
+  //             description: "Payment initialization failed. Please try again.");
+  //       }
+  //     }
+  //   }).catchError((e) {
+  //     _paymentTimeoutTimer?.cancel();
+  //     setState(() {
+  //       _isProcessingPayment = false;
+  //       _paymentStartTime = null;
+  //     });
+  //     showToastDanger(description: "Failed to get user info: ${e.toString()}");
+  //     NyLogger.error('User info error: $e');
+  //   });
+  // }
+
+  bool _validatePaymentInputs(SubscriptionPlan plan) {
+    try {
+      double amount = double.parse(plan.amount);
+      if (amount <= 0) {
+        showToastDanger(description: "Invalid plan amount");
+        return false;
+      }
+
+      String razorpayKey = getEnv('RAZORPAY_KEY_ID');
+      if (razorpayKey.isEmpty) {
+        showToastDanger(description: "Payment configuration error");
+        return false;
+      }
+
+      return true;
+    } catch (e) {
+      showToastDanger(description: "Invalid plan configuration");
+      return false;
+    }
   }
 
   Future<Map<String, dynamic>> _getUserInfo() async {
@@ -588,19 +808,47 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
   }
 
   void _handlePaymentSuccess(PaymentSuccessResponse response) async {
-    NyLogger.debug('Payment Success Response: $response');
+    NyLogger.debug('Payment Success Response: ${response.toString()}');
+    NyLogger.debug('Payment Success Response: ${response.orderId}');
+    NyLogger.debug('Payment Success Response: ${response.paymentId}');
+    NyLogger.debug('Payment Success Response: ${response.signature}');
 
-    String paymentId = response.paymentId ?? '';
-    String orderId = response.orderId ?? (await generateUniqueId());
-    String signature = response.signature ?? (await generateUniqueId());
+    // Cancel timeout and reset state immediately
+    _paymentTimeoutTimer?.cancel();
+    if (mounted) {
+      setState(() {
+        _isProcessingPayment = false;
+        _isVerifyingPayment = true;
+        _currentLoadingMessage =
+            "Payment successful! Verifying and processing enrollment...";
+      });
+    }
 
     try {
-      showLoadingDialog(trans("Processing enrollment..."));
+      String paymentId = response.paymentId ?? '';
+      String orderId = response.orderId ?? _currentOrderId ?? '';
+      String signature = response.signature ?? '';
+
+      if (paymentId.isEmpty || orderId.isEmpty) {
+        throw Exception(
+            "Invalid payment response - missing required information");
+      }
+
+      // ✅ Update loading message for verification step
+      if (mounted) {
+        setState(() {
+          _currentLoadingMessage = "Verifying payment with our servers...";
+        });
+      }
 
       SubscriptionPlan plan = subscriptionPlans[selectedPlanIndex];
       var courseApiService = CourseApiService();
 
-      await courseApiService.purchaseCourse(
+      // Add small delay to show the verification message
+      await Future.delayed(Duration(milliseconds: 800));
+
+      // Verify payment with backend
+      final purchaseResult = await courseApiService.purchaseCourse(
         courseId: course!.id,
         planType: plan.planType,
         razorpayPaymentId: paymentId,
@@ -608,197 +856,347 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
         razorpaySignature: signature,
       );
 
-      // Hide processing dialog
-      if (mounted && Navigator.canPop(context)) {
-        Navigator.pop(context);
+      NyLogger.info('✅ Payment verification successful');
+
+      // ✅ Transition to enrollment completion phase
+      if (mounted) {
+        setState(() {
+          _isVerifyingPayment = false;
+          _isCompletingEnrollment = true;
+          _currentLoadingMessage = "Finalizing your enrollment...";
+        });
+      }
+
+      await _handleSuccessfulEnrollment(
+          courseApiService, paymentId, purchaseResult);
+    } catch (e) {
+      _resetAllLoadingStates();
+      NyLogger.error('❌ Payment verification failed: $e');
+
+      String errorMessage = _getPaymentErrorMessage(e);
+      showToastDanger(description: errorMessage);
+    }
+  }
+
+  String _getPaymentErrorMessage(dynamic error) {
+    String errorStr = error.toString().toLowerCase();
+
+    if (errorStr.contains('signature')) {
+      return "Payment verification failed. Please contact support with your transaction details.";
+    } else if (errorStr.contains('already enrolled')) {
+      return "You are already enrolled in this course";
+    } else if (errorStr.contains('amount mismatch')) {
+      return "Payment amount verification failed. Please contact support.";
+    } else if (errorStr.contains('network') ||
+        errorStr.contains('connection')) {
+      return "Network error during verification. Please check your connection.";
+    } else {
+      return "Payment verification failed. Please try again or contact support.";
+    }
+  }
+
+  String _getPaymentFailureMessage(PaymentFailureResponse response) {
+    if (response.code != null) {
+      switch (response.code) {
+        case 'BAD_REQUEST_ERROR':
+          return 'Invalid payment request. Please try again.';
+        case 'GATEWAY_ERROR':
+          return 'Payment gateway error. Please try again.';
+        case 'NETWORK_ERROR':
+          return 'Network error. Please check your connection and try again.';
+        case 'SERVER_ERROR':
+          return 'Server error. Please try again later.';
+        default:
+          return response.message ?? 'Payment failed. Please try again.';
+      }
+    }
+    return response.message ?? 'Payment failed. Please try again.';
+  }
+
+  Widget _buildEnrollButton() {
+    return Container(
+      width: 150,
+      height: 50,
+      child: ElevatedButton(
+        onPressed: _isAnyProcessActive ? null : _startPaymentProcess,
+        onLongPress: _isAnyProcessActive ? _forceResetPaymentState : null,
+        child: _isAnyProcessActive
+            ? Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.amber),
+                      strokeWidth: 2,
+                    ),
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    _getCurrentLoadingText(),
+                    style: TextStyle(fontSize: 8, color: Colors.grey[600]),
+                    textAlign: TextAlign.center,
+                  ),
+                  if (_isAnyProcessActive)
+                    Text(
+                      'Hold to cancel',
+                      style: TextStyle(fontSize: 6, color: Colors.grey[400]),
+                    ),
+                ],
+              )
+            : Text(
+                'Enroll Now',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.black,
+                ),
+              ),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: Color(0xFFEFE458),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(25),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _handleSuccessfulEnrollment(CourseApiService courseApiService,
+      String paymentId, dynamic purchaseResult) async {
+    try {
+      // ✅ Update loading message for cache invalidation
+      if (mounted) {
+        setState(() {
+          _currentLoadingMessage = "Updating your course access...";
+        });
       }
 
       await courseApiService.invalidateEnrollmentCaches();
+      await Future.delayed(Duration(milliseconds: 500)); // Show the message
 
-// Get updated course with fresh enrollment details
+      // ✅ Update loading message for course data fetch
+      if (mounted) {
+        setState(() {
+          _currentLoadingMessage = "Preparing your course content...";
+        });
+      }
+
       Course updatedCourse;
       try {
         updatedCourse = await courseApiService
             .getCourseWithEnrollmentDetails(course!.id, refresh: true);
-        NyLogger.info(
-            'Retrieved updated course with enrollment details: ${updatedCourse.isEnrolled}, ${updatedCourse.hasValidSubscription}');
+        NyLogger.info('✅ Retrieved updated course with enrollment details');
       } catch (e) {
-        // Fallback: create updated course manually
-        updatedCourse = Course(
-          id: course!.id,
-          title: course!.title,
-          image: course!.image,
-          description: course!.description,
-          smallDesc: course!.smallDesc,
-          category: course!.category,
-          categoryName: course!.categoryName,
-          location: course!.location,
-          priceOneMonth: course!.priceOneMonth,
-          priceThreeMonths: course!.priceThreeMonths,
-          priceLifetime: course!.priceLifetime,
-          isFeatured: course!.isFeatured,
-          dateUploaded: course!.dateUploaded,
-          enrolledStudents: course!.enrolledStudents,
-          isEnrolled: true, // This is the key change
-          isWishlisted: course!.isWishlisted,
-          objectives: course!.objectives,
-          requirements: course!.requirements,
-          curriculum: course!.curriculum,
-        );
+        updatedCourse = _createUpdatedCourse();
       }
 
-      // Notify other screens about the enrollment
-      updateState('/search_tab', data: "refresh_courses");
-      updateState('/home_tab', data: "refresh_enrollments");
+      // ✅ Update loading message for final steps
+      if (mounted) {
+        setState(() {
+          _currentLoadingMessage = "Setting up offline downloads...";
+        });
+      }
 
-      // Start automatic background download
-      Future.microtask(() async {
-        try {
-          if (curriculumItems.isNotEmpty && username != null && email != null) {
-            bool downloadStarted = await _videoService.downloadAllVideos(
-              courseId: course!.id.toString(),
-              course: course!,
-              curriculum: curriculumItems,
-              watermarkText: username!,
-              email: email!,
+      // Notify other screens
+      _notifyEnrollmentSuccess(updatedCourse);
+
+      // Start background download
+      _startBackgroundDownload();
+
+      await Future.delayed(Duration(milliseconds: 500)); // Show final message
+
+      // ✅ ONLY NOW stop all loading
+      _resetAllLoadingStates();
+      _paymentTimeoutTimer?.cancel();
+
+      // Show success dialog
+      await _showSuccessDialog(paymentId, updatedCourse, purchaseResult);
+    } catch (e) {
+      _resetAllLoadingStates();
+      throw Exception("Failed to complete enrollment: ${e.toString()}");
+    }
+  }
+
+  Course _createUpdatedCourse() {
+    return Course(
+      id: course!.id,
+      title: course!.title,
+      image: course!.image,
+      description: course!.description,
+      smallDesc: course!.smallDesc,
+      category: course!.category,
+      categoryName: course!.categoryName,
+      location: course!.location,
+      priceOneMonth: course!.priceOneMonth,
+      priceThreeMonths: course!.priceThreeMonths,
+      priceLifetime: course!.priceLifetime,
+      isFeatured: course!.isFeatured,
+      dateUploaded: course!.dateUploaded,
+      enrolledStudents: course!.enrolledStudents,
+      isEnrolled: true, // This is the key change
+      isWishlisted: course!.isWishlisted,
+      objectives: course!.objectives,
+      requirements: course!.requirements,
+      curriculum: course!.curriculum,
+    );
+  }
+
+  void _notifyEnrollmentSuccess(Course updatedCourse) {
+    final updateData = {
+      'type': 'course_enrolled',
+      'courseId': course!.id,
+      'updatedCourse': updatedCourse.toJson(),
+      'enrollmentSuccess': true,
+    };
+
+    updateState('/search_tab', data: updateData);
+    updateState('/home_tab', data: updateData);
+    updateState('/course-detail', data: updateData);
+    updateState('/wishlist_tab', data: updateData);
+  }
+
+  void _startBackgroundDownload() {
+    Future.microtask(() async {
+      try {
+        if (curriculumItems.isNotEmpty && username != null && email != null) {
+          bool downloadStarted = await _videoService.downloadAllVideos(
+            courseId: course!.id.toString(),
+            course: course!,
+            curriculum: curriculumItems,
+            watermarkText: username!,
+            email: email!,
+          );
+
+          if (downloadStarted && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(trans(
+                    "Videos are queued for download. You can continue using the app while downloads complete in the background.")),
+                backgroundColor: Colors.green,
+                duration: const Duration(seconds: 4),
+              ),
             );
-
-            if (downloadStarted && mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(trans(
-                      "Videos are queued for download. You can continue using the app while downloads complete in the background.")),
-                  backgroundColor: Colors.green,
-                  duration: const Duration(seconds: 4),
-                ),
-              );
-            }
           }
-        } catch (e) {
-          NyLogger.error('Error starting background download: $e');
         }
-      });
+      } catch (e) {
+        NyLogger.error('Error starting background download: $e');
+      }
+    });
+  }
 
-      // Create updated course with enrollment status
-      updatedCourse = Course(
-        id: course!.id,
-        title: course!.title,
-        image: course!.image,
-        description: course!.description,
-        smallDesc: course!.smallDesc,
-        category: course!.category,
-        categoryName: course!.categoryName,
-        location: course!.location,
-        priceOneMonth: course!.priceOneMonth,
-        priceThreeMonths: course!.priceThreeMonths,
-        priceLifetime: course!.priceLifetime,
-        isFeatured: course!.isFeatured,
-        dateUploaded: course!.dateUploaded,
-        enrolledStudents: course!.enrolledStudents,
-        isEnrolled: true, // This is the key change
-        isWishlisted: course!.isWishlisted,
-        objectives: course!.objectives,
-        requirements: course!.requirements,
-        curriculum: course!.curriculum,
-      );
-
-      // Show success dialog with navigation back to CourseDetailPage
-      await showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (BuildContext context) {
-          return AlertDialog(
-            title: Text("Enrollment Successful"),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(
-                  Icons.check_circle_outline,
-                  color: Colors.green,
-                  size: 60,
-                ),
-                SizedBox(height: 16),
+  Future<void> _showSuccessDialog(
+      String paymentId, Course updatedCourse, dynamic purchaseResult) async {
+    return showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Text("🎉 Enrollment Successful"),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                Icons.check_circle_outline,
+                color: Colors.green,
+                size: 60,
+              ),
+              SizedBox(height: 16),
+              Text(
+                "You have successfully enrolled in ${course!.title}.",
+                style: TextStyle(fontSize: 16),
+              ),
+              SizedBox(height: 8),
+              Text(
+                "Payment ID: ${paymentId}",
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              ),
+              if (_currentOrderId != null) ...[
+                SizedBox(height: 4),
                 Text(
-                  "You have successfully enrolled in ${course!.title}.",
-                  style: TextStyle(fontSize: 16),
-                ),
-                SizedBox(height: 8),
-                Text(
-                  "Transaction ID: ${paymentId}",
+                  "Order ID: ${_currentOrderId}",
                   style: TextStyle(fontSize: 12, color: Colors.grey[600]),
                 ),
-                SizedBox(height: 8),
-                Text(
-                  "Your videos are being prepared for offline viewing.",
-                  style: TextStyle(fontSize: 12, color: Colors.blue[600]),
-                ),
               ],
-            ),
-            actions: [
-              TextButton(
-                child: Text("View Course Details"),
-                onPressed: () {
-                  Navigator.pop(context); // Close dialog
-
-                  // Navigate back to CourseDetailPage with updated course data
-
-                  routeTo(BaseNavigationHub.path,
-                      tabIndex: 1,
-                      navigationType: NavigationType.pushAndRemoveUntil,
-                      removeUntilPredicate: (route) => true);
-
-                  // Force refresh the current CourseDetailPage with updated course
-                  updateState('/course-detail', data: {
-                    'refresh': true,
-                    'course': updatedCourse, // Pass the updated course
-                    'curriculum': curriculumItems,
-                  });
-                  final updateData = {
-                    'type': 'course_enrolled',
-                    'courseId': course!.id,
-                    'updatedCourse': updatedCourse
-                        .toJson(), // Pass the complete updated course
-                    'enrollmentSuccess': true,
-                  };
-                  updateState('/search_tab', data: updateData);
-                  updateState('/home_tab', data: updateData);
-                  updateState('/course-detail', data: updateData);
-                  updateState('/wishlist_tab', data: updateData);
-                },
+              SizedBox(height: 8),
+              Text(
+                "Your videos are being prepared for offline viewing.",
+                style: TextStyle(fontSize: 12, color: Colors.blue[600]),
               ),
             ],
-          );
-        },
-      );
-    } catch (e) {
-      if (mounted && Navigator.canPop(context)) {
-        Navigator.pop(context);
-      }
+          ),
+          actions: [
+            TextButton(
+              child: Text("View Course"),
+              style: TextButton.styleFrom(foregroundColor: Colors.amber),
+              onPressed: () {
+                Navigator.pop(context); // Close dialog
+                _navigateToBase(updatedCourse);
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
 
-      showToastDanger(description: "Enrollment failed: ${e.toString()}");
-    } finally {
-      setState(() {
-        _isProcessingPayment = false;
-      });
-    }
+  void _navigateToBase(Course updatedCourse) {
+    routeTo(BaseNavigationHub.path,
+        tabIndex: 1,
+        navigationType: NavigationType.pushAndRemoveUntil,
+        removeUntilPredicate: (route) => true);
+
+    // Force refresh the current CourseDetailPage with updated course
+    updateState('/course-detail', data: {
+      'refresh': true,
+      'course': updatedCourse,
+      'curriculum': curriculumItems,
+    });
   }
 
   void _clearPaymentData() {
     // Clear any cached payment information
     // Reset form state if needed
   }
-  void _showPaymentErrorDialog(PaymentFailureResponse response) {
+
+  void _showPaymentErrorDialog(String errorMessage) {
+    if (!mounted) return;
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: Text("Payment Failed"),
-        content: Text(
-            "Please try again or contact support if the problem persists."),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.error_outline,
+              color: Colors.red,
+              size: 48,
+            ),
+            SizedBox(height: 16),
+            Text(errorMessage),
+            SizedBox(height: 8),
+            Text(
+              "Please try again or contact support if the problem persists.",
+              style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+            ),
+          ],
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: Text("OK"),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              // Retry payment
+              _startPaymentProcess();
+            },
+            child: Text("Retry"),
           ),
         ],
       ),
@@ -806,29 +1204,79 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
   }
 
   void _handlePaymentError(PaymentFailureResponse response) {
-    if (mounted) {
-      setState(() {
-        _isProcessingPayment = false;
-      });
+    NyLogger.error('❌ Payment Error Response: ${response.toString()}');
 
-      // Clear any sensitive payment data
-      _clearPaymentData();
+    if (!mounted) return;
 
-      // Show user-friendly error message
-      _showPaymentErrorDialog(response);
+    // ✅ Stop all loading on error
+    _resetAllLoadingStates();
+    _clearPaymentData();
+
+    try {
+      String errorMessage = _getPaymentFailureMessage(response);
+      _showPaymentErrorDialog(errorMessage);
+    } catch (e) {
+      NyLogger.error('Error handling payment failure: $e');
+      _showPaymentErrorDialog("Payment failed. Please try again.");
     }
-
-    showToastDanger(
-        description: "Payment failed: ${response.message ?? 'Unknown error'}");
   }
 
   void _handleExternalWallet(ExternalWalletResponse response) {
-    setState(() {
-      _isProcessingPayment = false;
-    });
+    try {
+      // Cancel timeout and reset state
+      _paymentTimeoutTimer?.cancel();
 
-    showToastInfo(
-        description: "External wallet selected: ${response.walletName ?? ''}");
+      _resetAllLoadingStates();
+      String walletName = response.walletName ?? 'External Wallet';
+      showToastInfo(description: "External wallet selected: $walletName");
+    } catch (e) {
+      _resetAllLoadingStates();
+      NyLogger.error('Error handling external wallet: $e');
+      showToastInfo(description: "External wallet selected");
+    }
+  }
+
+  void _resetAllLoadingStates() {
+    _paymentTimeoutTimer?.cancel();
+    if (mounted) {
+      setState(() {
+        _isCreatingOrder = false;
+        _isProcessingPayment = false;
+        _isVerifyingPayment = false;
+        _isCompletingEnrollment = false;
+        _currentLoadingMessage = "";
+        _paymentStartTime = null;
+        _currentOrderDetails = null;
+        _currentOrderId = null;
+      });
+    }
+  }
+
+  // ✅ NEW: Force reset (for long press)
+  void _forceResetPaymentState() {
+    _resetAllLoadingStates();
+    showToastInfo(description: "Payment process cancelled");
+  }
+
+  // ✅ NEW: Better error message handling
+  String _getErrorMessage(dynamic error) {
+    String errorStr = error.toString().toLowerCase();
+
+    if (errorStr.contains('already enrolled') ||
+        errorStr.contains('already have')) {
+      return "You are already enrolled in this course";
+    } else if (errorStr.contains('invalid plan')) {
+      return "Invalid subscription plan selected";
+    } else if (errorStr.contains('not found')) {
+      return "Course not found. Please try again.";
+    } else if (errorStr.contains('network') ||
+        errorStr.contains('connection')) {
+      return "Network error. Please check your connection and try again.";
+    } else if (errorStr.contains('timeout')) {
+      return "Request timed out. Please try again.";
+    } else {
+      return "Failed to create payment order. Please try again.";
+    }
   }
 
   void showLoadingDialog(String message) {
@@ -843,7 +1291,9 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
                 color: Colors.amber,
               ),
               SizedBox(width: 20),
-              Text(message),
+              Expanded(
+                child: Text(message),
+              ),
             ],
           ),
         );

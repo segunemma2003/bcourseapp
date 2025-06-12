@@ -18,7 +18,7 @@ dependencies:
   url_launcher: ^6.2.6
   google_fonts: ^6.2.1
   analyzer: ^6.7.0
-  intl: ^0.19.0
+  intl: ^0.20.2
   nylo_framework: ^6.8.5
   pretty_dio_logger: ^1.4.0
   cupertino_icons: ^1.0.8
@@ -49,18 +49,20 @@ dependencies:
   isolate_handler: ^1.0.2
   aws_signature_v4: ^0.6.4
   crypto: ^3.0.6
-  disk_space: ^0.2.1
+
   connectivity_plus: ^6.1.4
   image_picker: ^1.1.2
   laravel_notify_fcm: ^2.1.0
   firebase_core: ^3.13.0
   firebase_messaging: ^15.2.5
-  flutter_web_auth: ^0.6.0
   firebase_auth: ^5.5.3
   device_info_plus: ^11.3.0
   country_picker: ^2.0.27
   firebase_crashlytics: ^4.3.6
   firebase_analytics: ^11.4.6
+  storage_info: ^1.0.0
+  flutter_web_auth_2: ^4.1.0
+
 
 
 dev_dependencies:

@@ -18,7 +18,7 @@ import 'package:http/http.dart' as http;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:dio/dio.dart';
 import 'package:connectivity_plus/connectivity_plus.dart'; // Add this package for network connectivity
-import 'package:disk_space/disk_space.dart'; // Add this package for disk space checks
+import 'package:storage_info/storage_info.dart';
 
 import '../../resources/pages/enrollment_plan_page.dart';
 import '../../resources/pages/video_player_page.dart';
@@ -1560,7 +1560,8 @@ class VideoService {
   // Check available disk space
   Future<bool> _checkDiskSpace() async {
     try {
-      double? freeDiskSpace = await DiskSpace.getFreeDiskSpace;
+      final _storageInfoPlugin = StorageInfo();
+      double? freeDiskSpace = await _storageInfoPlugin.getStorageFreeSpace();
 
       if (freeDiskSpace != null) {
         // Convert to MB (freeDiskSpace is in MB)

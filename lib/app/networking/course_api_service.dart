@@ -425,6 +425,66 @@ class CourseApiService extends NyApiService {
     }
   }
 
+  Future<Map<String, dynamic>> createPaymentOrder({
+    required int courseId,
+    required String planType,
+    int? paymentCardId,
+  }) async {
+    final authToken = await backpackRead('auth_token');
+    if (authToken == null) {
+      throw Exception("Not logged in");
+    }
+
+    Map<String, dynamic> data = {
+      "course_id": courseId,
+      "plan_type": planType,
+    };
+
+    if (paymentCardId != null) {
+      data["payment_card_id"] = paymentCardId;
+    }
+
+    try {
+      return await network(
+        request: (request) =>
+            request.post("/payments/create-order/", data: data),
+        headers: {
+          "Authorization": "Token $authToken",
+          "Content-Type": "application/json",
+        },
+        handleSuccess: (Response response) {
+          NyLogger.info('✅ Payment order created successfully');
+          NyLogger.debug('Order response: ${response.data}');
+          return response.data;
+        },
+        handleFailure: (DioException dioError) {
+          String errorMessage = "Failed to create payment order";
+
+          if (dioError.response?.data != null) {
+            try {
+              final errorData = dioError.response!.data;
+              if (errorData is Map<String, dynamic>) {
+                if (errorData.containsKey('error')) {
+                  errorMessage = errorData['error'].toString();
+                } else if (errorData.containsKey('message')) {
+                  errorMessage = errorData['message'].toString();
+                }
+              }
+            } catch (e) {
+              NyLogger.error('Error parsing create order error response: $e');
+            }
+          }
+
+          NyLogger.error('❌ Create order failed: $errorMessage');
+          throw Exception("$errorMessage: ${dioError.message}");
+        },
+      );
+    } catch (e) {
+      NyLogger.error('❌ Create payment order error: $e');
+      rethrow;
+    }
+  }
+
   /// Get user's wishlist with short caching
   Future<List<dynamic>> getWishlist({bool refresh = false}) async {
     final authToken = await backpackRead('auth_token');

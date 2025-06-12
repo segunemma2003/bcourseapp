@@ -25,6 +25,9 @@ class _WishlistTabState extends NyState<WishlistTab> {
   bool _hasWishlistedCourses = false;
   bool _isAuthenticated = false;
 
+  // Track loading state for each wishlist item's view details button
+  Set<String> _loadingViewDetails = <String>{};
+
   // Set state name for Nylo's state management
   _WishlistTabState() {
     stateName = WishlistTab.state;
@@ -161,74 +164,83 @@ class _WishlistTabState extends NyState<WishlistTab> {
   }
 
   void _viewCourseDetails(Wishlist wishlistItem) async {
-    try {
-      // Show loading indicator
-      setLoading(true, name: 'fetch_course_details');
-
-      // Fetch the complete course details using the courseId
-      var courseApiService = CourseApiService();
-
-      // First try to get course details
+    // Use lockRelease to prevent multiple simultaneous clicks on the same item
+    await lockRelease('view_course_details_${wishlistItem.id}',
+        perform: () async {
       try {
-        // Get the course data using courseId
-        dynamic courseData =
-            await courseApiService.getCourseDetails(wishlistItem.courseId);
+        // Show loading indicator on button
+        setState(() {
+          _loadingViewDetails.add(wishlistItem.id.toString());
+        });
 
-        // Check if courseData is a List or a single object
-        if (courseData is List) {
-          // If it's a list, take the first item
-          if (courseData.isNotEmpty) {
-            // Convert the first item to a Course object
-            Course course = Course.fromJson(courseData[0]);
-            // Navigate to course detail with the course object
-            routeTo(CourseDetailPage.path, data: {'course': course});
+        // Fetch the complete course details using the courseId
+        var courseApiService = CourseApiService();
+
+        // First try to get course details
+        try {
+          // Get the course data using courseId
+          dynamic courseData =
+              await courseApiService.getCourseDetails(wishlistItem.courseId);
+
+          // Check if courseData is a List or a single object
+          if (courseData is List) {
+            // If it's a list, take the first item
+            if (courseData.isNotEmpty) {
+              // Convert the first item to a Course object
+              Course course = Course.fromJson(courseData[0]);
+              // Navigate to course detail with the course object
+              routeTo(CourseDetailPage.path, data: {'course': course});
+            } else {
+              throw Exception("No course details returned");
+            }
           } else {
-            throw Exception("No course details returned");
+            // If it's a single object, convert directly
+            Course course = Course.fromJson(courseData);
+            routeTo(CourseDetailPage.path, data: {'course': course});
           }
-        } else {
-          // If it's a single object, convert directly
-          Course course = Course.fromJson(courseData);
-          routeTo(CourseDetailPage.path, data: {'course': course});
+        } catch (e) {
+          NyLogger.error('Failed to fetch course details: $e');
+
+          // Try to get complete details with enrollment info if basic details fails
+          try {
+            var completeDetails = await courseApiService
+                .getCompleteDetails(wishlistItem.courseId);
+
+            // Check if completeDetails is a Course or needs conversion
+            if (completeDetails is Course) {
+              routeTo(CourseDetailPage.path, data: {'course': completeDetails});
+            } else {
+              Course course = Course.fromJson(completeDetails);
+              routeTo(CourseDetailPage.path, data: {'course': course});
+            }
+          } catch (e2) {
+            NyLogger.error('Both detail fetch attempts failed: $e2');
+
+            // Show error toast
+            showToastWarning(
+              description:
+                  trans("Could not load course details, please try again"),
+            );
+
+            // If getting course details fails, redirect to search tab to browse all courses
+            confirmAction(() {
+              routeTo(BaseNavigationHub.path, tabIndex: 1);
+            },
+                title: trans("Course details could not be loaded"),
+                confirmText: trans("Browse Courses"),
+                dismissText: trans("Cancel"));
+          }
         }
       } catch (e) {
-        NyLogger.error('Failed to fetch course details: $e');
-
-        // Try to get complete details with enrollment info if basic details fails
-        try {
-          var completeDetails =
-              await courseApiService.getCompleteDetails(wishlistItem.courseId);
-
-          // Check if completeDetails is a Course or needs conversion
-          if (completeDetails is Course) {
-            routeTo(CourseDetailPage.path, data: {'course': completeDetails});
-          } else {
-            Course course = Course.fromJson(completeDetails);
-            routeTo(CourseDetailPage.path, data: {'course': course});
-          }
-        } catch (e2) {
-          NyLogger.error('Both detail fetch attempts failed: $e2');
-
-          // Show error toast
-          showToastWarning(
-            description:
-                trans("Could not load course details, please try again"),
-          );
-
-          // If getting course details fails, redirect to search tab to browse all courses
-          confirmAction(() {
-            routeTo(BaseNavigationHub.path, tabIndex: 1);
-          },
-              title: trans("Course details could not be loaded"),
-              confirmText: trans("Browse Courses"),
-              dismissText: trans("Cancel"));
-        }
+        NyLogger.error('Error navigating to course details: $e');
+        showToastDanger(description: trans("Could not load course details"));
+      } finally {
+        // Remove loading indicator
+        setState(() {
+          _loadingViewDetails.remove(wishlistItem.id.toString());
+        });
       }
-    } catch (e) {
-      NyLogger.error('Error navigating to course details: $e');
-      showToastDanger(description: trans("Could not load course details"));
-    } finally {
-      setLoading(false, name: 'fetch_course_details');
-    }
+    });
   }
 
   Future<void> _removeFromWishlist(Wishlist wishlistItem) async {
@@ -546,6 +558,9 @@ class _WishlistTabState extends NyState<WishlistTab> {
   }
 
   Widget _buildWishlistItem(Wishlist wishlistItem) {
+    final isLoadingViewDetails =
+        _loadingViewDetails.contains(wishlistItem.id.toString());
+
     return Container(
       margin: EdgeInsets.only(bottom: 16),
       decoration: BoxDecoration(
@@ -564,7 +579,9 @@ class _WishlistTabState extends NyState<WishlistTab> {
         children: [
           // Course Image and Info
           InkWell(
-            onTap: () => _viewCourseDetails(wishlistItem),
+            onTap: isLoadingViewDetails
+                ? null
+                : () => _viewCourseDetails(wishlistItem),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -688,24 +705,49 @@ class _WishlistTabState extends NyState<WishlistTab> {
                   ),
                 ),
 
-                // View details button
+                // View details button with loading state
                 ElevatedButton(
-                  onPressed: () => _viewCourseDetails(wishlistItem),
+                  onPressed: isLoadingViewDetails
+                      ? null
+                      : () => _viewCourseDetails(wishlistItem),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.amber,
-                    foregroundColor: Colors.black,
+                    backgroundColor: isLoadingViewDetails
+                        ? Colors.grey.shade300
+                        : Colors.amber,
+                    foregroundColor: isLoadingViewDetails
+                        ? Colors.grey.shade600
+                        : Colors.black,
                     elevation: 0,
                     padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(4),
                     ),
                   ),
-                  child: Text(
-                    trans("View Details"),
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
-                    ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (isLoadingViewDetails) ...[
+                        SizedBox(
+                          width: 12,
+                          height: 12,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.0,
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                                Colors.grey.shade600),
+                          ),
+                        ),
+                        SizedBox(width: 8),
+                      ],
+                      Text(
+                        isLoadingViewDetails
+                            ? trans("Loading...")
+                            : trans("View Details"),
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],

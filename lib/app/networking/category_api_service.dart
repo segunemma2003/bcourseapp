@@ -132,10 +132,10 @@ class CategoryApiService extends NyApiService {
           NyLogger.error('Failed to preload categories: $e');
           return <dynamic>[];
         }),
-        getCategoriesWithCourseCount().catchError((e) {
-          NyLogger.error('Failed to preload categories with count: $e');
-          return <dynamic>[];
-        }),
+        // getCategoriesWithCourseCount().catchError((e) {
+        //   NyLogger.error('Failed to preload categories with count: $e');
+        //   return <dynamic>[];
+        // }),
       ]);
 
       NyLogger.info('Category data preloading completed');
@@ -149,7 +149,7 @@ class CategoryApiService extends NyApiService {
     try {
       await Future.wait([
         getCategories(refresh: true),
-        getCategoriesWithCourseCount(refresh: true),
+        // getCategoriesWithCourseCount(refresh: true),
       ]);
       NyLogger.info('Category cache warmed up successfully');
     } catch (e) {
