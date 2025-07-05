@@ -244,6 +244,7 @@ class _WishlistTabState extends NyState<WishlistTab> {
   }
 
   Future<void> _removeFromWishlist(Wishlist wishlistItem) async {
+    print("remove_from_wishlist_${wishlistItem.id}");
     // Using Nylo's lockRelease to prevent multiple simultaneous operations
     await lockRelease('remove_from_wishlist_${wishlistItem.id}',
         perform: () async {

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_app/app/models/course.dart';
 import 'package:flutter_app/resources/pages/enrollment_plan_page.dart';
@@ -28,10 +29,12 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
   bool _isLoadingWishlist = false;
   bool _isInitializing = true;
   bool _hasValidSubscription = false;
+  bool _isAuthenticated = false;
   bool _isLifetimeSubscription = false;
   DateTime? _subscriptionExpiryDate;
   String _subscriptionStatus = 'not_enrolled';
   String _subscriptionPlanName = 'Unknown';
+  List<String> _enrolledCourseIds = [];
 
   String _totalDuration = "- minutes";
   bool _isChecking = false;
@@ -42,6 +45,300 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
   final PurchaseApiService _purchaseApiService = PurchaseApiService();
   final VideoService _videoService = VideoService();
   final ScrollController _scrollController = ScrollController();
+
+  bool _listsEqual(List<String> list1, List<String> list2) {
+    if (list1.length != list2.length) return false;
+
+    // Sort both lists to compare content regardless of order
+    List<String> sortedList1 = List.from(list1)..sort();
+    List<String> sortedList2 = List.from(list2)..sort();
+
+    for (int i = 0; i < sortedList1.length; i++) {
+      if (sortedList1[i] != sortedList2[i]) return false;
+    }
+    return true;
+  }
+
+  Future<void> _refreshCourseEnrollmentStatus() async {
+    if (_isAuthenticated && courseDetail != null) {
+      await _forceRefreshEnrolledCourses();
+
+      // Check if course is enrolled
+      bool isEnrolled = _isCourseEnrolled(courseDetail!);
+
+      if (isEnrolled) {
+        // Update course with enrollment data
+        await _updateCourseWithEnrollmentData();
+      } else {
+        setState(() {
+          _isEnrolled = false;
+          _extractSubscriptionDetails();
+        });
+      }
+
+      NyLogger.info(
+          '🔄 After refresh - Enrolled: $_isEnrolled, Valid subscription: $_hasValidSubscription');
+    }
+  }
+
+// Call this in your init method after loading enrolled course IDs:
+
+  bool _isCourseEnrolled(Course course) {
+    bool isEnrolled = _enrolledCourseIds.contains(course.id.toString());
+    NyLogger.debug(
+        '🔍 Course ${course.id} (${course.title}) enrollment status: $isEnrolled');
+    NyLogger.debug('🔍 Enrolled course IDs: $_enrolledCourseIds');
+    return isEnrolled;
+  }
+
+  Future<void> _fetchFreshEnrollmentData() async {
+    if (!_isAuthenticated) return;
+
+    try {
+      var courseApiService = CourseApiService();
+      List<dynamic> enrollmentsData = await courseApiService
+          .getEnrollments(refresh: true)
+          .timeout(Duration(seconds: 10));
+
+      if (enrollmentsData.isNotEmpty) {
+        List<String> enrolledIds = enrollmentsData
+            .where((data) => data['course'] != null)
+            .map((data) => data['course']['id'].toString())
+            .toList();
+
+        // ✅ Only update state if the data has actually changed
+        if (!_listsEqual(_enrolledCourseIds, enrolledIds)) {
+          setState(() {
+            _enrolledCourseIds = enrolledIds;
+          });
+
+          // ✅ Ensure we save as List<String>
+          try {
+            await NyStorage.save('enrolled_course_ids', enrolledIds);
+            NyLogger.info('✅ Updated enrolled course IDs: $enrolledIds');
+          } catch (saveError) {
+            NyLogger.error('Failed to save enrolled course IDs: $saveError');
+          }
+        }
+      } else {
+        if (_enrolledCourseIds.isNotEmpty) {
+          setState(() {
+            _enrolledCourseIds = [];
+          });
+          // Save empty list to cache
+          await NyStorage.save('enrolled_course_ids', <String>[]);
+        }
+      }
+    } catch (e) {
+      NyLogger.error('❌ Failed to fetch fresh enrollment data: $e');
+    }
+  }
+
+  Future<void> _loadEnrolledCourseIds() async {
+    if (!_isAuthenticated) {
+      setState(() {
+        _enrolledCourseIds = [];
+      });
+      return;
+    }
+
+    try {
+      // Always try to get from storage first (faster)
+      dynamic cachedData = await NyStorage.read('enrolled_course_ids');
+      List<String>? cachedIds;
+
+      // ✅ Handle different data types that might be stored
+      if (cachedData != null) {
+        if (cachedData is List<String>) {
+          cachedIds = cachedData;
+        } else if (cachedData is List) {
+          // Convert List<dynamic> to List<String>
+          cachedIds = cachedData.map((item) => item.toString()).toList();
+        } else if (cachedData is String) {
+          // Handle case where single string is stored
+          try {
+            // Try to parse as JSON array
+            var decoded = jsonDecode(cachedData);
+            if (decoded is List) {
+              cachedIds = decoded.map((item) => item.toString()).toList();
+            } else {
+              // Single string, convert to list
+              cachedIds = [cachedData];
+            }
+          } catch (e) {
+            // If JSON parsing fails, treat as single string
+            cachedIds = [cachedData];
+          }
+        } else {
+          // Unknown type, clear cache and start fresh
+          NyLogger.debug(
+              'Unknown cache type: ${cachedData.runtimeType}, clearing cache');
+          await NyStorage.delete('enrolled_course_ids');
+          cachedIds = null;
+        }
+      }
+
+      if (cachedIds != null && cachedIds.isNotEmpty) {
+        setState(() {
+          _enrolledCourseIds = cachedIds!;
+        });
+        NyLogger.info(
+            '✅ Loaded ${cachedIds.length} enrolled course IDs from cache: $cachedIds');
+
+        // ✅ Also fetch fresh data in background to keep cache updated
+        _fetchFreshEnrollmentData();
+        return;
+      }
+
+      // If no valid cache, fetch from API
+      await _fetchFreshEnrollmentData();
+    } catch (e) {
+      NyLogger.error('❌ Error loading enrolled course IDs: $e');
+
+      // ✅ Clear corrupted cache and start fresh
+      try {
+        await NyStorage.delete('enrolled_course_ids');
+        NyLogger.info('🧹 Cleared corrupted cache, fetching fresh data');
+      } catch (clearError) {
+        NyLogger.error('Failed to clear cache: $clearError');
+      }
+
+      setState(() {
+        _enrolledCourseIds = [];
+      });
+
+      // Try to fetch fresh data
+      await _fetchFreshEnrollmentData();
+    }
+  }
+
+  Future<void> _updateCourseWithEnrollmentData() async {
+    if (!_isAuthenticated || courseDetail == null) return;
+
+    try {
+      // Get fresh enrollment data
+      var courseApiService = CourseApiService();
+      List<dynamic> enrollmentsData = await courseApiService
+          .getEnrollments(refresh: true)
+          .timeout(Duration(seconds: 10));
+
+      // Find enrollment data for this specific course
+      Map<String, dynamic>? courseEnrollmentData;
+      for (var enrollment in enrollmentsData) {
+        if (enrollment['course'] != null &&
+            enrollment['course']['id'].toString() ==
+                courseDetail!.id.toString()) {
+          courseEnrollmentData = enrollment;
+          break;
+        }
+      }
+
+      print("ghvsdjbkflngfbjgkbfsdkxvclbdskjbvjdbjvdjdv");
+      print(courseEnrollmentData);
+      if (courseEnrollmentData != null) {
+        // Create UserEnrollment object from API data
+        UserEnrollment userEnrollment = UserEnrollment(
+          id: courseEnrollmentData['id'] ?? 0,
+          planType: courseEnrollmentData['plan_type'] ?? '',
+          planName: courseEnrollmentData['plan_name'] ?? '',
+          expiryDate: courseEnrollmentData['expiry_date'] != null
+              ? DateTime.tryParse(
+                  courseEnrollmentData['expiry_date'].toString())
+              : null,
+          isActive: courseEnrollmentData['is_active'] == true,
+          isExpired: courseEnrollmentData['is_expired'] == true,
+        );
+
+        // Create EnrollmentStatus object from API data
+        EnrollmentStatus enrollmentStatus = EnrollmentStatus(
+          status:
+              courseEnrollmentData['is_active'] == true ? 'active' : 'inactive',
+          message: 'Enrollment found',
+          planType: courseEnrollmentData['plan_type'] ?? '',
+          planName: courseEnrollmentData['plan_name'] ?? '',
+          expiresOn: courseEnrollmentData['expiry_date'] != null
+              ? DateTime.tryParse(
+                  courseEnrollmentData['expiry_date'].toString())
+              : null,
+          isLifetime: courseEnrollmentData['plan_type'] == 'LIFETIME',
+        );
+
+        // Update the course object with enrollment data
+        setState(() {
+          courseDetail = courseDetail!.copyWith(
+            isEnrolled: true,
+            userEnrollment: userEnrollment,
+            enrollmentStatus: enrollmentStatus,
+          );
+
+          _isEnrolled = true;
+          _extractSubscriptionDetails();
+        });
+
+        NyLogger.info(
+            '✅ Updated course ${courseDetail!.id} with enrollment data');
+        NyLogger.info('   Plan: ${courseEnrollmentData['plan_name']}');
+        NyLogger.info('   Type: ${courseEnrollmentData['plan_type']}');
+        NyLogger.info('   Active: ${courseEnrollmentData['is_active']}');
+        NyLogger.info('   Valid subscription: $_hasValidSubscription');
+      } else {
+        NyLogger.info(
+            '⚠️ No enrollment data found for course ${courseDetail!.id}');
+        setState(() {
+          _isEnrolled = false;
+          _extractSubscriptionDetails();
+        });
+      }
+    } catch (e) {
+      NyLogger.error('❌ Error updating course with enrollment data: $e');
+    }
+  }
+
+  Future<void> _forceRefreshEnrolledCourses() async {
+    // if (!_isAuthenticated) return;
+
+    NyLogger.info('🔄 Force refreshing enrolled course IDs...');
+
+    try {
+      var courseApiService = CourseApiService();
+
+      // Clear cache first
+      await NyStorage.delete('enrolled_course_ids');
+
+      // Fetch fresh data from API
+      List<dynamic> enrollmentsData = await courseApiService
+          .getEnrollments(refresh: true)
+          .timeout(Duration(seconds: 15));
+
+      if (enrollmentsData.isNotEmpty) {
+        List<String> enrolledIds = enrollmentsData
+            .where((data) => data['course'] != null)
+            .map((data) => data['course']['id'].toString())
+            .toList();
+
+        setState(() {
+          _enrolledCourseIds = enrolledIds;
+        });
+
+        // ✅ Save with proper type
+        try {
+          await NyStorage.save('enrolled_course_ids', enrolledIds);
+          NyLogger.info(
+              '✅ Force refresh completed. Enrolled IDs: $enrolledIds');
+        } catch (saveError) {
+          NyLogger.error('Failed to save after force refresh: $saveError');
+        }
+      } else {
+        setState(() {
+          _enrolledCourseIds = [];
+        });
+        await NyStorage.save('enrolled_course_ids', <String>[]);
+        NyLogger.info('⚠️ No enrollments found after force refresh');
+      }
+    } catch (e) {
+      NyLogger.error('❌ Force refresh failed: $e');
+    }
+  }
 
   @override
   void initState() {
@@ -59,13 +356,30 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
   }
 
   void _extractSubscriptionDetails() {
-    if (courseDetail == null) return;
+    if (courseDetail == null) {
+      NyLogger.debug(
+          '⚠️ courseDetail is null, cannot extract subscription details');
+      return;
+    }
+
+    // Store previous values for comparison
+    bool previousValidSubscription = _hasValidSubscription;
 
     _hasValidSubscription = courseDetail!.hasValidSubscription;
     _isLifetimeSubscription = courseDetail!.isLifetimeSubscription;
     _subscriptionExpiryDate = courseDetail!.subscriptionExpiryDate;
     _subscriptionStatus = courseDetail!.subscriptionStatus;
     _subscriptionPlanName = courseDetail!.subscriptionPlanName;
+
+    // Debug logging
+    NyLogger.info('📋 Subscription Details for Course ${courseDetail!.id}:');
+    NyLogger.info('   📅 Enrolled: $_isEnrolled');
+    NyLogger.info(
+        '   ✅ Valid Subscription: $_hasValidSubscription (was: $previousValidSubscription)');
+    NyLogger.info('   🔄 Lifetime: $_isLifetimeSubscription');
+    NyLogger.info('   📅 Expiry Date: $_subscriptionExpiryDate');
+    NyLogger.info('   📊 Status: $_subscriptionStatus');
+    NyLogger.info('   🏷️ Plan: $_subscriptionPlanName');
   }
 
   Future<void> _refreshEnrollmentDetails(int courseId) async {
@@ -126,23 +440,31 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
         setLoading(true, name: 'objectives');
         setLoading(true, name: 'requirements');
 
+        _isAuthenticated = await Auth.isAuthenticated();
+
         try {
           Map<String, dynamic> data = widget.data();
+
           if (data.containsKey('course') && data['course'] != null) {
             courseDetail = data['course'];
-            // Use the enrollment status from the course model
-            _isEnrolled = courseDetail!.isEnrolled;
+
+            // ✅ FIRST: Extract subscription details from the course object
             _extractSubscriptionDetails();
+
+            if (_isAuthenticated) {
+              // ✅ Load enrolled course IDs
+              await _loadEnrolledCourseIds();
+
+              // ✅ Check enrollment and update with detailed enrollment data
+              await getEnrolled(courseDetail);
+            }
           } else {
             showToastDanger(description: "Course information is missing");
             pop();
             return;
           }
-
-          // if (_isEnrolled) {
-          //   await _refreshEnrollmentDetails(courseDetail!.id);
-          // }
-
+          await _refreshCourseEnrollmentStatus();
+          // Continue with the rest of your initialization...
           int courseId = courseDetail!.id;
           List<Future> futures = [];
 
@@ -211,6 +533,24 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
         }
       };
 
+  void _debugSubscriptionState() {
+    NyLogger.info('🐛 DEBUGGING SUBSCRIPTION STATE:');
+    NyLogger.info('   Course ID: ${courseDetail?.id}');
+    NyLogger.info('   _isEnrolled: $_isEnrolled');
+    NyLogger.info('   _hasValidSubscription: $_hasValidSubscription');
+    NyLogger.info('   _isLifetimeSubscription: $_isLifetimeSubscription');
+    NyLogger.info('   _subscriptionExpiryDate: $_subscriptionExpiryDate');
+    NyLogger.info('   _subscriptionStatus: $_subscriptionStatus');
+    NyLogger.info(
+        '   courseDetail.hasValidSubscription: ${courseDetail?.hasValidSubscription}');
+    NyLogger.info('   courseDetail.isEnrolled: ${courseDetail?.isEnrolled}');
+    NyLogger.info(
+        '   courseDetail.userEnrollment: ${courseDetail?.userEnrollment?.toJson()}');
+    NyLogger.info(
+        '   courseDetail.enrollmentStatus: ${courseDetail?.enrollmentStatus?.toJson()}');
+    NyLogger.info('   enrolledCourseIds: $_enrolledCourseIds');
+  }
+
   void _calculateTotalDuration() {
     if (!mounted) return;
 
@@ -247,6 +587,34 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
     }
   }
 
+  Future<void> getEnrolled(courseDetail) async {
+    if (courseDetail == null) return;
+
+    bool wasEnrolled = _isEnrolled;
+    bool isCurrentlyEnrolled = _isCourseEnrolled(courseDetail);
+
+    if (isCurrentlyEnrolled &&
+        (courseDetail.userEnrollment == null ||
+            courseDetail.enrollmentStatus == null)) {
+      // Course is enrolled but missing enrollment details, fetch them
+      NyLogger.info(
+          '🔄 Course is enrolled but missing enrollment details, fetching...');
+      await _updateCourseWithEnrollmentData();
+    } else {
+      // Just update the enrollment status
+      if (wasEnrolled != isCurrentlyEnrolled || _isInitializing) {
+        setState(() {
+          _isEnrolled = isCurrentlyEnrolled;
+          _extractSubscriptionDetails();
+        });
+
+        NyLogger.info(
+            '🔄 Enrollment status updated: $_isEnrolled for course ${courseDetail?.id}');
+        NyLogger.info('🔄 Subscription valid: $_hasValidSubscription');
+      }
+    }
+  }
+
   @override
   get stateActions => {
         "course_enrolled": (Map<String, dynamic> data) async {
@@ -260,6 +628,14 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
                 _isEnrolled = updatedCourse.isEnrolled;
                 _extractSubscriptionDetails();
               });
+
+              // ✅ Also update local enrolled course IDs
+              if (!_enrolledCourseIds.contains(courseDetail!.id.toString())) {
+                setState(() {
+                  _enrolledCourseIds.add(courseDetail!.id.toString());
+                });
+                await NyStorage.save('enrolled_course_ids', _enrolledCourseIds);
+              }
 
               NyLogger.info(
                   'Updated course enrollment status in CourseDetailPage');
@@ -1028,7 +1404,7 @@ class _CourseDetailPageState extends NyPage<CourseDetailPage> {
                 },
               ),
             SizedBox(height: 10),
-            if (_isEnrolled || curriculumItems.length > 5)
+            if (_isEnrolled && curriculumItems.length > 5)
               GestureDetector(
                 onTap: () {
                   _navigateToCurriculum();

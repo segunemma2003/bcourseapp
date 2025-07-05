@@ -3,7 +3,7 @@ plugins {
     id "kotlin-android"
     id "dev.flutter.flutter-gradle-plugin"
     id "com.google.gms.google-services"
-    id "com.google.firebase.crashlytics"  // ADD THIS LINE
+    id "com.google.firebase.crashlytics"
 }
 
 def localProperties = new Properties()
@@ -66,11 +66,27 @@ android {
 
     defaultConfig {
         applicationId "com.bhavani.com"
+        // FFmpeg plugin requires minSdkVersion 24
         minSdkVersion 24
         targetSdkVersion 35
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
         multiDexEnabled true
+        
+        // ADD: Explicit ABI filters to support more devices
+        ndk {
+            abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64'
+        }
+        
+        // ADD: Ensure all architectures are supported
+        splits {
+            abi {
+                enable false // Set to true if you want separate APKs per architecture
+                reset()
+                include 'arm64-v8a', 'armeabi-v7a', 'x86_64'
+                universalApk true // Generate universal APK
+            }
+        }
     }
 
     // Signing configurations
@@ -91,14 +107,18 @@ android {
             if (keystorePropertiesFile.exists()) {
                 signingConfig signingConfigs.release
             }
-            minifyEnabled false
-            shrinkResources false
+            // ENABLE obfuscation for better security and crash reporting
+            minifyEnabled true
+            shrinkResources true
             firebaseCrashlytics {
-                nativeSymbolUploadEnabled false
+                nativeSymbolUploadEnabled true  // Enable native symbol upload
             }
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            
+            // ADD: Ensure debuggable is false for release
+            debuggable false
         }
-        
+
         debug {
             minifyEnabled false
             debuggable true
@@ -114,7 +134,7 @@ dependencies {
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
     implementation platform('com.google.firebase:firebase-bom:33.14.0')
     implementation 'com.google.firebase:firebase-analytics'
-    implementation 'com.google.firebase:firebase-crashlytics'  // ADD THIS LINE
+    implementation 'com.google.firebase:firebase-crashlytics'
     implementation 'com.google.android.gms:play-services-auth:20.7.0'
     implementation 'androidx.multidex:multidex:2.0.1'
 }

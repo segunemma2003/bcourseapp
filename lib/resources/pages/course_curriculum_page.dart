@@ -1,16 +1,20 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 import 'package:flutter_app/app/models/course.dart';
 import 'package:flutter_app/app/services/video_service.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:video_player/video_player.dart';
 
 import '../../app/networking/course_api_service.dart';
 import '../widgets/courses_tab_widget.dart';
 import 'enrollment_plan_page.dart';
+import 'package:better_player_plus/better_player_plus.dart';
 
 class CourseCurriculumPage extends NyStatefulWidget {
   static RouteView path = ("/course-curriculum", (_) => CourseCurriculumPage());
@@ -19,7 +23,8 @@ class CourseCurriculumPage extends NyStatefulWidget {
       : super(child: () => _CourseCurriculumPageState());
 }
 
-class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
+class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
+    with WidgetsBindingObserver {
   // Data variables
   List<dynamic> curriculumItems = [];
   bool _isOnline = true;
@@ -28,7 +33,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
   String totalVideos = "";
   String totalDuration = "";
   int startIndex = 0;
-
+  BetterPlayerController? _activeVideoController;
   // ❌ REMOVED: All subscription validation variables
   // bool _hasValidSubscription = false;
   // bool _isLifetimeSubscription = false;
@@ -86,6 +91,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
 
     // Listen for download progress updates with robust error handling
     _progressSubscription = _videoService.progressStream.listen(
@@ -842,20 +848,75 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
     }
   }
 
+  Future<VideoPlayerController> _createOptimizedController({
+    required String videoPath,
+    required bool isLocal,
+    String quality = '240p',
+  }) async {
+    VideoPlayerController controller;
+
+    if (isLocal) {
+      controller = VideoPlayerController.file(File(videoPath));
+    } else {
+      // Default to 240p for network videos
+      String optimizedUrl = _getQualityUrl(videoPath, quality);
+
+      controller = VideoPlayerController.networkUrl(
+        Uri.parse(optimizedUrl),
+        httpHeaders: {
+          'User-Agent':
+              'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15',
+          'Accept': '*/*',
+          'Connection': 'keep-alive',
+          'Cache-Control': 'no-cache', // Reduce buffering issues
+        },
+        formatHint: VideoFormat.hls, // Explicitly set HLS format
+      );
+    }
+
+    await controller.initialize();
+
+    // Set initial quality to 240p for data saving
+    if (!isLocal) {
+      controller.setPlaybackSpeed(1.0);
+    }
+
+    return controller;
+  }
+
+  String _getQualityUrl(String baseUrl, String quality) {
+    // Modify based on your streaming setup
+    if (baseUrl.contains('.m3u8')) {
+      // HLS stream - append quality parameter
+      return baseUrl.replaceAll('master.m3u8', '${quality}.m3u8');
+    } else {
+      // Regular MP4 - add quality parameter
+      return '$baseUrl?quality=$quality';
+    }
+  }
+
   @override
   void dispose() {
     // Cancel stream subscription to avoid memory leaks
     _progressSubscription?.cancel();
     _scrollController.dispose();
+    _activeVideoController?.dispose(); // Simplified disposal
+    _activeVideoController = null;
     // Close bottom sheet if open
     _bottomSheetController?.close();
-    // ❌ REMOVED: _subscriptionCheckTimer?.cancel();
-
     _downloadProgressSubscription?.cancel();
-
     _progressSubscription = null;
-
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      // Pause/stop video when app goes to background
+      _activeVideoController?.pause();
+    }
   }
 
   Future<void> _checkDownloadedVideos() async {
@@ -1176,77 +1237,543 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
     }
   }
 
-  // ✅ SIMPLIFIED: Removed subscription validation
-  Future<void> _playVideo(int index) async {
-    if (course == null) return;
-
-    // ❌ REMOVED: Subscription validation
-    // if (!await _validateSubscriptionForDownload()) {
-    //   return;
-    // }
-
-    var item = curriculumItems[index];
-    bool isDownloaded = _downloadedStatus[index] ?? false;
-
-    if (isDownloaded) {
-      // ✅ Pass course object to playVideo method
-      await _videoService.playVideo(
-        videoUrl: item['video_url'],
-        courseId: course!.id.toString(),
-        videoId: index.toString(),
-        watermarkText: _username,
-        course: course!, // ✅ Add this parameter
-        context: context,
-      );
-
-      // Mark as completed after watching
-      setState(() {
-        _completedLessons[index] = true;
-      });
-
-      await _saveProgress();
-    } else {
-      // Prompt to download
-      await showDialog(
-        context: context,
-        builder: (BuildContext context) {
-          return AlertDialog(
-            title: Text(trans("Video not downloaded")),
-            content: Text(trans("Do you want to download this video now?")),
-            actions: [
-              TextButton(
-                child: Text(trans("Cancel")),
-                onPressed: () {
-                  Navigator.of(context).pop();
+  Future<void> _showPlaybackOptionsDialog(int index, String videoTitle) async {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: EdgeInsets.all(16),
+                child: Text("Choose Playback Option",
+                    style:
+                        TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              ),
+              ListTile(
+                leading: Icon(Icons.download_done, color: Colors.green),
+                title: Text(trans("Play Downloaded Video")),
+                subtitle: Text(trans("Offline • No data usage")),
+                onTap: () {
+                  Navigator.pop(context);
+                  _launchVideoPlayer(
+                      index: index,
+                      preferOffline: true,
+                      videoTitle: videoTitle);
                 },
               ),
-              TextButton(
-                child: Text(trans("Download Now")),
-                onPressed: () {
-                  Navigator.of(context).pop();
+              ListTile(
+                leading: Icon(Icons.cloud, color: Colors.blue),
+                title: Text(trans("Stream Online")),
+                subtitle: Text(trans("Latest version • Uses data")),
+                onTap: () {
+                  Navigator.pop(context);
+                  _launchVideoPlayer(
+                      index: index,
+                      preferOffline: false,
+                      videoTitle: videoTitle);
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _showStreamOrDownloadOptions(int index) {
+    var item = curriculumItems[index];
+    String videoTitle = item['title'] ?? 'Video ${index + 1}';
+
+    showModalBottomSheet(
+      context: context,
+      builder: (context) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: EdgeInsets.all(16),
+                child: Text(videoTitle,
+                    style:
+                        TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              ),
+              ListTile(
+                leading: Icon(Icons.play_circle_filled, color: Colors.blue),
+                title: Text(trans("Stream Now")),
+                subtitle: Text(trans("Watch immediately • Uses data")),
+                onTap: () {
+                  Navigator.pop(context);
+                  _launchVideoPlayer(
+                      index: index,
+                      preferOffline: false,
+                      videoTitle: videoTitle);
+                },
+              ),
+              ListTile(
+                leading: Icon(Icons.download_for_offline, color: Colors.green),
+                title: Text(trans("Download First")),
+                subtitle: Text(trans("Save for offline viewing")),
+                onTap: () {
+                  Navigator.pop(context);
                   _downloadVideo(index);
                 },
               ),
             ],
-          );
-        },
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _launchVideoPlayer({
+    required int index,
+    required bool preferOffline,
+    required String videoTitle,
+  }) async {
+    try {
+      var item = curriculumItems[index];
+      String? videoUrl = item['video_url'];
+      String? localVideoPath;
+
+      if (preferOffline) {
+        localVideoPath = await _videoService.getVideoFilePath(
+            course!.id.toString(), index.toString());
+
+        await _showBetterVideoPlayer(
+            videoPath: localVideoPath, videoTitle: videoTitle, isLocal: true);
+      } else {
+        if (videoUrl != null && videoUrl.isNotEmpty) {
+          await _showBetterVideoPlayer(
+              videoPath: videoUrl, videoTitle: videoTitle, isLocal: false);
+        }
+      }
+
+      // Mark as completed
+      setState(() {
+        _completedLessons[index] = true;
+      });
+      await _saveProgress();
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(trans("Failed to play video"))),
       );
     }
   }
 
-  // ✅ SIMPLIFIED: Removed subscription validation from video tap handler
-  void _handleVideoTap(int index) {
-    // ❌ REMOVED: Subscription validation
-    // if (!_hasValidSubscription) {
-    //   _showSubscriptionRequiredDialog();
-    //   return;
-    // }
+  Future<void> _showBetterVideoPlayer({
+    required String videoPath,
+    required String videoTitle,
+    required bool isLocal,
+  }) async {
+    try {
+      // Dispose any existing controller first
+      _activeVideoController?.dispose();
+      // Create the configuration for optimal playback
+      BetterPlayerConfiguration betterPlayerConfiguration =
+          BetterPlayerConfiguration(
+        aspectRatio: 16 / 9,
+        autoPlay: true,
+        looping: false,
+        fullScreenByDefault: true,
+        allowedScreenSleep: false,
 
+        autoDetectFullscreenDeviceOrientation: true,
+        autoDetectFullscreenAspectRatio: true,
+        deviceOrientationsOnFullScreen: [
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
+        ],
+        systemOverlaysAfterFullScreen: SystemUiOverlay.values,
+        deviceOrientationsAfterFullScreen: [DeviceOrientation.portraitUp],
+        controlsConfiguration: BetterPlayerControlsConfiguration(
+          enablePlayPause: true,
+          enableMute: true,
+          enableFullscreen: true,
+          enableSkips: true,
+          enableProgressText: true,
+          enableProgressBar: true,
+          enablePlaybackSpeed: true,
+          enablePip: false,
+          enableRetry: true,
+          showControlsOnInitialize: true,
+          controlsHideTime: Duration(seconds: 3),
+          progressBarPlayedColor: Colors.amber,
+          progressBarHandleColor: Colors.amber,
+          progressBarBackgroundColor: Colors.white.withOpacity(0.3),
+          loadingColor: Colors.amber,
+          iconsColor: Colors.white,
+          overflowModalColor: Colors.black87,
+          overflowModalTextColor: Colors.white,
+          overflowMenuIconsColor: Colors.white,
+          playIcon: Icons.play_arrow,
+          pauseIcon: Icons.pause,
+          muteIcon: Icons.volume_off,
+          unMuteIcon: Icons.volume_up,
+          fullscreenEnableIcon: Icons.fullscreen,
+          fullscreenDisableIcon: Icons.fullscreen_exit,
+          backwardSkipTimeInMilliseconds: 10000,
+          forwardSkipTimeInMilliseconds: 10000,
+        ),
+        // Enhanced buffering for smooth playback
+
+        // Error handling
+        errorBuilder: (context, errorMessage) {
+          return Container(
+            color: Colors.black,
+            child: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.error_outline, color: Colors.red, size: 64),
+                  SizedBox(height: 16),
+                  Text(
+                    trans("Video Error"),
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    errorMessage ?? trans("Unknown error occurred"),
+                    style: TextStyle(color: Colors.white70),
+                    textAlign: TextAlign.center,
+                  ),
+                  SizedBox(height: 16),
+                  ElevatedButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    style:
+                        ElevatedButton.styleFrom(backgroundColor: Colors.amber),
+                    child: Text(trans("Close")),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+
+      // Create data source based on local or network
+      BetterPlayerDataSource dataSource;
+
+      if (isLocal) {
+        dataSource = BetterPlayerDataSource(
+          BetterPlayerDataSourceType.file,
+          bufferingConfiguration: BetterPlayerBufferingConfiguration(
+            minBufferMs: 5000, // 5 seconds min buffer
+            maxBufferMs: 30000, // 30 seconds max buffer
+            bufferForPlaybackMs: 2500, // 2.5 seconds to start playback
+            bufferForPlaybackAfterRebufferMs: 5000, // 5 seconds after rebuffer
+          ),
+          videoPath,
+          placeholder: Container(
+            color: Colors.black,
+            child: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(color: Colors.amber),
+                  SizedBox(height: 16),
+                  Text(
+                    trans("Loading downloaded video..."),
+                    style: TextStyle(color: Colors.white),
+                  ),
+                  SizedBox(height: 8),
+                  Container(
+                    padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.green.withOpacity(0.8),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.download_done,
+                            color: Colors.white, size: 16),
+                        SizedBox(width: 4),
+                        Text(
+                          trans("Offline"),
+                          style: TextStyle(color: Colors.white, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      } else {
+        dataSource = BetterPlayerDataSource(
+            BetterPlayerDataSourceType.network, videoPath,
+            bufferingConfiguration: BetterPlayerBufferingConfiguration(
+              minBufferMs: 3000, // 3 seconds min
+              maxBufferMs: 15000, // 15 seconds max
+              bufferForPlaybackMs: 1500, // 1.5 seconds to start ⭐
+              bufferForPlaybackAfterRebufferMs:
+                  3000, // 3 seconds after rebuffer
+            ),
+            // Optimized caching for network videos
+            cacheConfiguration: BetterPlayerCacheConfiguration(
+              useCache: true,
+              preCacheSize: 1 * 1024 * 1024, // 20MB pre-cache
+              maxCacheSize: 200 * 1024 * 1024 * 1024, // 200MB max cache
+              maxCacheFileSize: 100 * 1024 * 1024 * 1024, // 100MB max file
+              key: "cache_${videoPath.hashCode}",
+            ),
+            // Enhanced headers for better compatibility
+            headers: {
+              'User-Agent':
+                  'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15',
+              'Accept': '*/*',
+              'Accept-Encoding': 'identity',
+              'Range': 'bytes=0-',
+              'Connection': 'keep-alive',
+            },
+            //   // Loading placeholder
+            placeholder: Container(
+                //     color: Colors.black,
+                //     child: Center(
+                //       child: Column(
+                //         mainAxisAlignment: MainAxisAlignment.center,
+                //         children: [
+                //           SizedBox(
+                //             width: 60,
+                //             height: 60,
+                //             child: CircularProgressIndicator(
+                //               color: Colors.amber,
+                //               strokeWidth: 4,
+                //             ),
+                //           ),
+                //           SizedBox(height: 20),
+                //           Text(
+                //             trans("Loading video stream..."),
+                //             style: TextStyle(
+                //               color: Colors.white,
+                //               fontSize: 16,
+                //               fontWeight: FontWeight.w500,
+                //             ),
+                //           ),
+                //           SizedBox(height: 8),
+                //           Text(
+                //             trans("Buffering for best quality"),
+                //             style: TextStyle(
+                //               color: Colors.white70,
+                //               fontSize: 14,
+                //             ),
+                //           ),
+                //           SizedBox(height: 16),
+                //           Container(
+                //             padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                //             decoration: BoxDecoration(
+                //               color: Colors.blue.withOpacity(0.8),
+                //               borderRadius: BorderRadius.circular(12),
+                //             ),
+                //             child: Row(
+                //               mainAxisSize: MainAxisSize.min,
+                //               children: [
+                //                 Icon(Icons.cloud, color: Colors.white, size: 16),
+                //                 SizedBox(width: 4),
+                //                 Text(
+                //                   trans("Streaming"),
+                //                   style: TextStyle(color: Colors.white, fontSize: 12),
+                //                 ),
+                //               ],
+                //             ),
+                //           ),
+                //         ],
+                //       ),
+                //     ),
+                //   ),
+                ));
+
+        _activeVideoController = BetterPlayerController(
+          betterPlayerConfiguration,
+          betterPlayerDataSource: dataSource,
+        );
+      }
+
+      // Create the controller
+      // BetterPlayerController betterPlayerController = BetterPlayerController(
+      //   betterPlayerConfiguration,
+      //   betterPlayerDataSource: dataSource,
+      // );
+
+      // Show the video player in fullscreen dialog
+      await showDialog(
+        context: context,
+        barrierDismissible: false,
+        useSafeArea: false,
+        builder: (BuildContext context) {
+          return WillPopScope(
+            onWillPop: () async {
+              _activeVideoController?.dispose();
+              _activeVideoController = null;
+              return true;
+            },
+            child: Scaffold(
+              backgroundColor: Colors.black,
+              body: Stack(
+                children: [
+                  // Video player
+                  Center(
+                    child: BetterPlayer(
+                      controller: _activeVideoController!,
+                    ),
+                  ),
+
+                  // Custom header overlay - KEEP ALL YOUR EXISTING UI
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            Colors.black.withOpacity(0.8),
+                            Colors.black.withOpacity(0.4),
+                            Colors.transparent,
+                          ],
+                          stops: [0.0, 0.5, 1.0],
+                        ),
+                      ),
+                      child: SafeArea(
+                        child: Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Row(
+                            children: [
+                              // Close button
+                              Container(
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withOpacity(0.5),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: IconButton(
+                                  onPressed: () => Navigator.of(context).pop(),
+                                  icon: Icon(Icons.close,
+                                      color: Colors.white, size: 24),
+                                  padding: EdgeInsets.all(8),
+                                ),
+                              ),
+
+                              SizedBox(width: 12),
+
+                              // Video title
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      videoTitle,
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    SizedBox(height: 4),
+                                    Text(
+                                      isLocal
+                                          ? trans("Downloaded Video")
+                                          : trans("Streaming Video"),
+                                      style: TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+
+                              SizedBox(width: 12),
+
+                              // Status indicator
+                              Container(
+                                padding: EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 8),
+                                decoration: BoxDecoration(
+                                  color: isLocal
+                                      ? Colors.green.withOpacity(0.9)
+                                      : Colors.blue.withOpacity(0.9),
+                                  borderRadius: BorderRadius.circular(20),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.black.withOpacity(0.3),
+                                      blurRadius: 4,
+                                      offset: Offset(0, 2),
+                                    ),
+                                  ],
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      isLocal
+                                          ? Icons.download_done
+                                          : Icons.cloud,
+                                      color: Colors.white,
+                                      size: 16,
+                                    ),
+                                    SizedBox(width: 6),
+                                    Text(
+                                      isLocal
+                                          ? trans("Offline")
+                                          : trans("Streaming"),
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ).then((_) {
+        // Dispose controller when dialog closes
+        _activeVideoController?.dispose();
+        _activeVideoController = null;
+      }).catchError((error) {
+        // ✅ ADD ERROR HANDLING
+        _activeVideoController?.dispose();
+        _activeVideoController = null;
+      });
+    } catch (e) {
+      // ✅ ENSURE CLEANUP ON ERRORS
+      _activeVideoController?.dispose();
+      _activeVideoController = null;
+      // ... your error handling
+    }
+  }
+
+  void _handleVideoTap(int index) {
     bool isDownloaded = _downloadedStatus[index] ?? false;
     bool isDownloading = _downloadingStatus[index] ?? false;
     bool isWatermarking = _watermarkingStatus[index] ?? false;
     bool isQueued =
         _videoService.isQueued(course!.id.toString(), index.toString());
+
+    var item = curriculumItems[index];
+    bool hasOnlineUrl =
+        item['video_url'] != null && item['video_url'].toString().isNotEmpty;
 
     if (isDownloading || isWatermarking) {
       _showProcessingOptions(index);
@@ -1254,13 +1781,62 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
       _showQueuedOptions(index);
     } else if (isDownloaded) {
       _showDownloadedOptions(index);
+    } else if (hasOnlineUrl && _isOnline) {
+      _showStreamOrDownloadOptions(index);
     } else {
-      _downloadVideo(index);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(trans("Video unavailable"))),
+      );
     }
   }
 
+  Future<void> _playVideo(int index) async {
+    if (course == null) return;
+
+    var item = curriculumItems[index];
+    bool isDownloaded = _downloadedStatus[index] ?? false;
+    String? videoUrl = item['video_url'];
+    String videoTitle = item['title'] ?? 'Video ${index + 1}';
+
+    // Check network connectivity
+    bool hasNetwork = await _checkNetworkConnectivity();
+
+    // Determine available playback options
+    bool canStreamOnline =
+        hasNetwork && videoUrl != null && videoUrl.isNotEmpty;
+    bool canPlayOffline = isDownloaded;
+
+    if (!canStreamOnline && !canPlayOffline) {
+      // Show error and offer download
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content:
+              Text(trans("No internet connection and video not downloaded")),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    // If both options available, show choice dialog
+    if (canStreamOnline && canPlayOffline) {
+      await _showPlaybackOptionsDialog(index, videoTitle);
+    } else if (canPlayOffline) {
+      await _launchVideoPlayer(
+          index: index, preferOffline: true, videoTitle: videoTitle);
+    } else {
+      await _launchVideoPlayer(
+          index: index, preferOffline: false, videoTitle: videoTitle);
+    }
+  }
+
+  // ✅ SIMPLIFIED: Removed subscription validation from video tap handler
+
   void _showDownloadedOptions(int index) {
     bool isCompleted = _completedLessons[index] ?? false;
+    var item = curriculumItems[index]; // Add this line
+    bool hasOnlineUrl = item['video_url'] != null &&
+        item['video_url'].toString().isNotEmpty; // Add this line
 
     showModalBottomSheet(
       context: context,
@@ -1274,14 +1850,54 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                // Play offline option
                 ListTile(
-                  leading: Icon(Icons.play_circle_outline, color: Colors.amber),
-                  title: Text(trans("Play video")),
+                  leading: Container(
+                    padding: EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: Colors.green.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Icon(Icons.download_done,
+                        color: Colors.green, size: 20),
+                  ),
+                  title: Text(trans("Play Downloaded Video")),
+                  subtitle: Text(trans("Offline • Best quality")),
                   onTap: () {
                     Navigator.pop(context);
-                    _playVideo(index);
+                    _launchVideoPlayer(
+                      index: index,
+                      preferOffline: true,
+                      videoTitle: item['title'] ?? 'Video ${index + 1}',
+                    );
                   },
                 ),
+
+                // Play online option (if available)
+                if (hasOnlineUrl && _isOnline)
+                  ListTile(
+                    leading: Container(
+                      padding: EdgeInsets.all(6),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Icon(Icons.cloud, color: Colors.blue, size: 20),
+                    ),
+                    title: Text(trans("Stream Online")),
+                    subtitle: Text(trans("Uses data • Latest version")),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _launchVideoPlayer(
+                        index: index,
+                        preferOffline: false,
+                        videoTitle: item['title'] ?? 'Video ${index + 1}',
+                      );
+                    },
+                  ),
+
+                Divider(),
+
                 if (!isCompleted)
                   ListTile(
                     leading:

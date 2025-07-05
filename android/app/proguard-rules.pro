@@ -84,3 +84,18 @@
 # Your app's model classes (adjust package name)
 -keep class com.bhavani.com.models.** { *; }
 -keep class com.bhavani.com.app.models.** { *; }
+
+# Your existing rules + these additions:
+
+# Google Play Core rules (for deferred components)
+-keep class com.google.android.play.core.** { *; }
+-dontwarn com.google.android.play.core.**
+
+# Flutter deferred components rules
+-keep class io.flutter.embedding.engine.deferredcomponents.** { *; }
+-dontwarn io.flutter.embedding.engine.deferredcomponents.**
+
+# Specific missing classes from your original error
+-dontwarn com.google.android.play.core.splitcompat.SplitCompatApplication
+-dontwarn com.google.android.play.core.splitinstall.**
+-dontwarn com.google.android.play.core.tasks.**

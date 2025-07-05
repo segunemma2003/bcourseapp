@@ -3136,41 +3136,47 @@ class VideoService {
     required String courseId,
     required String videoId,
   }) async {
-    try {
-      // Get the user-specific file path for the video
-      String filePath = await getVideoFilePath(courseId, videoId);
-      File videoFile = File(filePath);
+    // try {
+    //   // Get the user-specific file path for the video
+    //   String filePath = await getVideoFilePath(courseId, videoId);
+    //   File videoFile = File(filePath);
 
-      // Check if the file exists
-      bool exists = await videoFile.exists();
+    //   // Check if the file exists
+    //   bool exists = await videoFile.exists();
 
-      if (exists) {
-        // Also check file size to ensure it's a valid video file
-        int fileSize = await videoFile.length();
+    //   if (exists) {
+    //     // Also check file size to ensure it's a valid video file
+    //     int fileSize = await videoFile.length();
 
-        // Consider files below 10KB as invalid/incomplete videos
-        if (fileSize < 10 * 1024) {
-          NyLogger.error(
-              'Video file exists but is too small (${fileSize} bytes), considering as not downloaded');
-          return false;
-        }
+    //     // Consider files below 10KB as invalid/incomplete videos
+    //     if (fileSize < 10 * 1024) {
+    //       NyLogger.error(
+    //           'Video file exists but is too small (${fileSize} bytes), considering as not downloaded');
+    //       return false;
+    //     }
 
-        NyLogger.info(
-            'Video found for user $_currentUserId: $courseId/$videoId (${fileSize} bytes)');
-        return true;
-      }
+    //     NyLogger.info(
+    //         'Video found for user $_currentUserId: $courseId/$videoId (${fileSize} bytes)');
+    //     return true;
+    //   }
 
-      NyLogger.info(
-          'Video not found for user $_currentUserId: $courseId/$videoId');
-      return false;
-    } catch (e) {
-      _reportError('is_video_downloaded', e, additionalData: {
-        'user_id': _currentUserId ?? 'unknown',
-        'course_id': courseId,
-        'video_id': videoId,
-      });
-      return false;
-    }
+    //   NyLogger.info(
+    //       'Video not found for user $_currentUserId: $courseId/$videoId');
+    //   return false;
+    // } catch (e) {
+    //   _reportError('is_video_downloaded', e, additionalData: {
+    //     'user_id': _currentUserId ?? 'unknown',
+    //     'course_id': courseId,
+    //     'video_id': videoId,
+    //   });
+    //   return false;
+    // }
+
+    return await isVideoFullyDownloaded(
+      videoUrl: videoUrl,
+      courseId: courseId,
+      videoId: videoId,
+    );
   }
 
   // Enhanced watermarking with error reporting
@@ -4206,8 +4212,14 @@ class VideoService {
       String videoPath = await getVideoFilePath(courseId, videoId);
       File videoFile = File(videoPath);
 
+      bool isFullyDownloaded = await isVideoFullyDownloaded(
+        videoUrl: videoUrl,
+        courseId: courseId,
+        videoId: videoId,
+      );
+
       // Check if the video exists locally
-      if (await videoFile.exists()) {
+      if (isFullyDownloaded) {
         FirebaseCrashlytics.instance.log(
             'Video file found locally, preparing for playback: $videoPath');
 
@@ -4438,6 +4450,75 @@ class VideoService {
 
   //   return result;
   // }
+
+  Future<bool> isVideoFullyDownloaded({
+    required String videoUrl,
+    required String courseId,
+    required String videoId,
+  }) async {
+    try {
+      // 1. Check if file exists
+      String videoPath = await getVideoFilePath(courseId, videoId);
+      File videoFile = File(videoPath);
+      if (!await videoFile.exists()) return false;
+
+      // 2. Check file size is not zero or too small
+      int fileSize = await videoFile.length();
+      if (fileSize < 1024 * 10) return false; // Less than 10KB is suspicious
+
+      // 3. Check if download is marked as completed in metadata
+      bool isMarkedComplete =
+          await _isDownloadMarkedComplete(courseId, videoId);
+      if (!isMarkedComplete) return false;
+
+      // 4. Verify watermark flag exists (indicates completion)
+      bool hasWatermarkFlag = await _hasWatermarkFlag(courseId, videoId);
+      if (!hasWatermarkFlag) return false;
+
+      return true;
+    } catch (e) {
+      NyLogger.error('Error checking if video is fully downloaded: $e');
+      return false;
+    }
+  }
+
+  Future<bool> _isDownloadMarkedComplete(
+      String courseId, String videoId) async {
+    try {
+      String key = 'progress_${courseId}_$videoId';
+      dynamic progress = await NyStorage.read(key);
+
+      if (progress is double) {
+        return progress >= 1.0;
+      } else if (progress is int) {
+        return progress >= 1;
+      } else if (progress is String) {
+        try {
+          double progressValue = double.parse(progress);
+          return progressValue >= 1.0;
+        } catch (e) {
+          return false;
+        }
+      }
+
+      return false;
+    } catch (e) {
+      NyLogger.error('Error checking download completion status: $e');
+      return false;
+    }
+  }
+
+  /// Check if watermark flag exists
+  Future<bool> _hasWatermarkFlag(String courseId, String videoId) async {
+    try {
+      String watermarkFlagPath = await _getWatermarkFlagPath(courseId, videoId);
+      File watermarkFlagFile = File(watermarkFlagPath);
+      return await watermarkFlagFile.exists();
+    } catch (e) {
+      NyLogger.error('Error checking watermark flag: $e');
+      return false;
+    }
+  }
 
 // Dispose resources
   void dispose() {

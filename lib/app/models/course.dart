@@ -162,6 +162,14 @@ class Course extends Model {
   bool get hasValidSubscription {
     NyLogger.info('🔍 DEBUG hasValidSubscription for course $id ($title):');
     NyLogger.info('   isEnrolled: $isEnrolled');
+    NyLogger.info('   enrollmentStatus: ${enrollmentStatus?.toJson()}');
+    NyLogger.info('   userEnrollment: ${userEnrollment?.toJson()}');
+
+    // If not enrolled, no valid subscription
+    if (!isEnrolled) {
+      NyLogger.info('   ❌ Not enrolled, returning false');
+      return false;
+    }
 
     // Check if it's a lifetime subscription
     if (isLifetimeSubscription) {
@@ -173,8 +181,7 @@ class Course extends Model {
     DateTime? expiryDate = subscriptionExpiryDate;
 
     if (expiryDate == null) {
-      NyLogger.info(
-          '   ⚠️ No expiry date found, assuming valid since enrolled');
+      NyLogger.info('   ✅ No expiry date found, assuming valid since enrolled');
       return true;
     }
 
