@@ -32,7 +32,7 @@
 
     <!-- APPLICATION TAG STARTS HERE -->
     <application
-        android:label="Bhavani Course"
+        android:label="ByBhavani"
         android:name="${applicationName}"
         android:allowBackup="false"
         android:fullBackupContent="false"

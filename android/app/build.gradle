@@ -68,14 +68,14 @@ android {
         applicationId "com.bhavani.com"
         // FFmpeg plugin requires minSdkVersion 24
         minSdkVersion 24
-        targetSdkVersion 35
+        targetSdkVersion 34
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
         multiDexEnabled true
         
         // ADD: Explicit ABI filters to support more devices
         ndk {
-            abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64'
+             abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86'
         }
         
         // ADD: Ensure all architectures are supported
@@ -83,8 +83,8 @@ android {
             abi {
                 enable false // Set to true if you want separate APKs per architecture
                 reset()
-                include 'arm64-v8a', 'armeabi-v7a', 'x86_64'
-                universalApk true // Generate universal APK
+                include 'arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86'
+                universalApk false // Generate universal APK
             }
         }
     }

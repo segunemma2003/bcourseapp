@@ -5,6 +5,7 @@ import 'dart:math';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_app/app/services/video_service_utils.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 import 'package:flutter_app/app/models/course.dart';
 import 'package:flutter_app/app/services/video_service.dart';
@@ -34,14 +35,6 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
   String totalDuration = "";
   int startIndex = 0;
   BetterPlayerController? _activeVideoController;
-  // ❌ REMOVED: All subscription validation variables
-  // bool _hasValidSubscription = false;
-  // bool _isLifetimeSubscription = false;
-  // DateTime? _subscriptionExpiryDate;
-  // String _subscriptionStatus = 'not_enrolled';
-  // String _subscriptionPlanName = 'Unknown';
-  // Timer? _subscriptionCheckTimer;
-  // bool _showExpiredBanner = false;
 
   // Download status tracking
   Map<int, bool> _downloadingStatus = {};
@@ -78,15 +71,6 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
 
   // Bottom sheet controller
   PersistentBottomSheetController? _bottomSheetController;
-
-  // ❌ REMOVED: All subscription validation methods
-  // void _extractSubscriptionDetails() { ... }
-  // Future<void> _validateSubscriptionStatus() async { ... }
-  // void _showSubscriptionExpiredDialog() { ... }
-  // void _handleSubscriptionRenewal() { ... }
-  // void _showSubscriptionRequiredDialog() { ... }
-  // void _setupSubscriptionValidation() { ... }
-  // Future<bool> _validateSubscriptionForDownload() async { ... }
 
   @override
   void initState() {
@@ -264,15 +248,6 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
           } else {
             courseName = "Course Curriculum";
           }
-
-          // ❌ REMOVED: Subscription expiry banner logic
-          // if (course != null) {
-          //   if (!_hasValidSubscription) {
-          //     setState(() {
-          //       _showExpiredBanner = true;
-          //     });
-          //   }
-          // }
 
           // Extract curriculum items
           if (pageData.containsKey('curriculum') &&
@@ -1534,73 +1509,13 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
               'Connection': 'keep-alive',
             },
             //   // Loading placeholder
-            placeholder: Container(
-                //     color: Colors.black,
-                //     child: Center(
-                //       child: Column(
-                //         mainAxisAlignment: MainAxisAlignment.center,
-                //         children: [
-                //           SizedBox(
-                //             width: 60,
-                //             height: 60,
-                //             child: CircularProgressIndicator(
-                //               color: Colors.amber,
-                //               strokeWidth: 4,
-                //             ),
-                //           ),
-                //           SizedBox(height: 20),
-                //           Text(
-                //             trans("Loading video stream..."),
-                //             style: TextStyle(
-                //               color: Colors.white,
-                //               fontSize: 16,
-                //               fontWeight: FontWeight.w500,
-                //             ),
-                //           ),
-                //           SizedBox(height: 8),
-                //           Text(
-                //             trans("Buffering for best quality"),
-                //             style: TextStyle(
-                //               color: Colors.white70,
-                //               fontSize: 14,
-                //             ),
-                //           ),
-                //           SizedBox(height: 16),
-                //           Container(
-                //             padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                //             decoration: BoxDecoration(
-                //               color: Colors.blue.withOpacity(0.8),
-                //               borderRadius: BorderRadius.circular(12),
-                //             ),
-                //             child: Row(
-                //               mainAxisSize: MainAxisSize.min,
-                //               children: [
-                //                 Icon(Icons.cloud, color: Colors.white, size: 16),
-                //                 SizedBox(width: 4),
-                //                 Text(
-                //                   trans("Streaming"),
-                //                   style: TextStyle(color: Colors.white, fontSize: 12),
-                //                 ),
-                //               ],
-                //             ),
-                //           ),
-                //         ],
-                //       ),
-                //     ),
-                //   ),
-                ));
+            placeholder: Container());
 
         _activeVideoController = BetterPlayerController(
           betterPlayerConfiguration,
           betterPlayerDataSource: dataSource,
         );
       }
-
-      // Create the controller
-      // BetterPlayerController betterPlayerController = BetterPlayerController(
-      //   betterPlayerConfiguration,
-      //   betterPlayerDataSource: dataSource,
-      // );
 
       // Show the video player in fullscreen dialog
       await showDialog(
@@ -2811,7 +2726,4 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
       ),
     );
   }
-
-  // ❌ REMOVED: _buildExpiredSubscriptionBanner method
-  // Widget _buildExpiredSubscriptionBanner() { ... }
 }
