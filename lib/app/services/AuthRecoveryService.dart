@@ -11,7 +11,7 @@ class AuthRecoveryService {
         return false;
       }
 
-      // Check if we have stored user data
+      // Check if we have stored ufser data
       final userData = await storageRead("user");
 
       if (userData == null) {

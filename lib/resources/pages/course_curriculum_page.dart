@@ -872,25 +872,94 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
 
   @override
   void dispose() {
-    // Cancel stream subscription to avoid memory leaks
+    // Cancel stream subscriptions
     _progressSubscription?.cancel();
+    _downloadProgressSubscription?.cancel();
+
+    // Dispose scroll controller
     _scrollController.dispose();
-    _activeVideoController?.dispose(); // Simplified disposal
-    _activeVideoController = null;
+
+    // Safely dispose video controller
+    // if (_activeVideoController != null) {
+    //   try {
+    //     _activeVideoController!.dispose();
+    //   } catch (e) {
+    //     NyLogger.error('Error disposing video controller: $e');
+    //   } finally {
+    //     _activeVideoController = null;
+    //   }
+    // }
+
+    _disposeActiveVideoController();
+
     // Close bottom sheet if open
     _bottomSheetController?.close();
-    _downloadProgressSubscription?.cancel();
+
+    // Clean up other resources
     _progressSubscription = null;
     WidgetsBinding.instance.removeObserver(this);
+
     super.dispose();
+  }
+
+  void _disposeActiveVideoController() {
+    if (_activeVideoController != null) {
+      try {
+        _activeVideoController!.dispose();
+      } catch (e) {
+        NyLogger.error('Error disposing active video controller: $e');
+      } finally {
+        _activeVideoController = null;
+      }
+    }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive) {
-      // Pause/stop video when app goes to background
-      _activeVideoController?.pause();
+    super.didChangeAppLifecycleState(state);
+
+    switch (state) {
+      case AppLifecycleState.paused:
+      case AppLifecycleState.inactive:
+        _pauseActiveVideoSafely();
+        break;
+      case AppLifecycleState.resumed:
+        _validateActiveControllerOnResume();
+        break;
+      case AppLifecycleState.detached:
+        _disposeActiveVideoController();
+        break;
+      case AppLifecycleState.hidden:
+        // Handle hidden state if needed
+        break;
+    }
+  }
+
+  void _pauseActiveVideoSafely() {
+    if (_activeVideoController != null) {
+      try {
+        // Try to access controller to check if it's still valid
+        _activeVideoController!.betterPlayerConfiguration;
+        _activeVideoController!.pause();
+      } catch (e) {
+        // Controller is disposed, clean up reference
+        NyLogger.info('Active controller was disposed during pause: $e');
+        _activeVideoController = null;
+      }
+    }
+  }
+
+  void _validateActiveControllerOnResume() {
+    if (_activeVideoController != null) {
+      try {
+        // Check if controller is still valid by accessing a property
+        _activeVideoController!.betterPlayerConfiguration;
+      } catch (e) {
+        // Controller is invalid, set to null so it can be recreated when needed
+        NyLogger.info(
+            'Active controller became invalid during app lifecycle change');
+        _activeVideoController = null;
+      }
     }
   }
 
@@ -972,6 +1041,161 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
     }
   }
 
+  Widget _buildErrorWidget(
+      String? errorMessage, String videoPath, String videoTitle, bool isLocal) {
+    return Container(
+      color: Colors.black,
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.error_outline, color: Colors.red, size: 64),
+            SizedBox(height: 16),
+            Text(
+              trans("Video Error"),
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            SizedBox(height: 8),
+            Text(
+              errorMessage ?? trans("Unknown error occurred"),
+              style: TextStyle(color: Colors.white70),
+              textAlign: TextAlign.center,
+            ),
+            SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: () {
+                // Try to reactivate controller on error
+                _reactivateController(videoPath, videoTitle, isLocal);
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.amber),
+              child: Text(trans("Retry")),
+            ),
+            SizedBox(height: 8),
+            ElevatedButton(
+              onPressed: () => Navigator.of(context).pop(),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.grey),
+              child: Text(trans("Close")),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ✅ Video player header widget
+  Widget _buildVideoPlayerHeader(String videoTitle, bool isLocal) {
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              Colors.black.withOpacity(0.8),
+              Colors.black.withOpacity(0.4),
+              Colors.transparent,
+            ],
+            stops: [0.0, 0.5, 1.0],
+          ),
+        ),
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Row(
+              children: [
+                // Close button
+                Container(
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.5),
+                    shape: BoxShape.circle,
+                  ),
+                  child: IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: Icon(Icons.close, color: Colors.white, size: 24),
+                    padding: EdgeInsets.all(8),
+                  ),
+                ),
+                SizedBox(width: 12),
+                // Video title
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        videoTitle,
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      SizedBox(height: 4),
+                      Text(
+                        isLocal
+                            ? trans("Downloaded Video")
+                            : trans("Streaming Video"),
+                        style: TextStyle(
+                          color: Colors.white70,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                SizedBox(width: 12),
+                // Status indicator
+                Container(
+                  padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: isLocal
+                        ? Colors.green.withOpacity(0.9)
+                        : Colors.blue.withOpacity(0.9),
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.3),
+                        blurRadius: 4,
+                        offset: Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        isLocal ? Icons.download_done : Icons.cloud,
+                        color: Colors.white,
+                        size: 16,
+                      ),
+                      SizedBox(width: 6),
+                      Text(
+                        isLocal ? trans("Offline") : trans("Streaming"),
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _cancelDownload(int index) async {
     if (course == null) return;
     final String courseIdStr = course!.id.toString();
@@ -1006,6 +1230,221 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
           duration: const Duration(seconds: 2),
         ),
       );
+    }
+  }
+
+  // Add these methods to your _CourseCurriculumPageState class
+
+// Method to ensure controller is active and reactivate if null
+
+// Enhanced method to create and initialize controller
+  Future<BetterPlayerController?> _createAndInitializeController({
+    required String videoPath,
+    required String videoTitle,
+    required bool isLocal,
+  }) async {
+    try {
+      // Dispose any existing controller first
+      _activeVideoController?.dispose();
+
+      // Create the configuration for optimal playback
+      BetterPlayerConfiguration betterPlayerConfiguration =
+          BetterPlayerConfiguration(
+        aspectRatio: 16 / 9,
+        autoPlay: true,
+        looping: false,
+        fullScreenByDefault: true,
+        allowedScreenSleep: false,
+        autoDetectFullscreenDeviceOrientation: true,
+        autoDetectFullscreenAspectRatio: true,
+        deviceOrientationsOnFullScreen: [
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
+        ],
+        systemOverlaysAfterFullScreen: SystemUiOverlay.values,
+        deviceOrientationsAfterFullScreen: [DeviceOrientation.portraitUp],
+        controlsConfiguration: BetterPlayerControlsConfiguration(
+          enablePlayPause: true,
+          enableMute: true,
+          enableFullscreen: true,
+          enableSkips: true,
+          enableProgressText: true,
+          enableProgressBar: true,
+          enablePlaybackSpeed: true,
+          enablePip: false,
+          enableRetry: true,
+          showControlsOnInitialize: true,
+          controlsHideTime: Duration(seconds: 3),
+          progressBarPlayedColor: Colors.amber,
+          progressBarHandleColor: Colors.amber,
+          progressBarBackgroundColor: Colors.white.withOpacity(0.3),
+          loadingColor: Colors.amber,
+          iconsColor: Colors.white,
+          overflowModalColor: Colors.black87,
+          overflowModalTextColor: Colors.white,
+          overflowMenuIconsColor: Colors.white,
+          playIcon: Icons.play_arrow,
+          pauseIcon: Icons.pause,
+          muteIcon: Icons.volume_off,
+          unMuteIcon: Icons.volume_up,
+          fullscreenEnableIcon: Icons.fullscreen,
+          fullscreenDisableIcon: Icons.fullscreen_exit,
+          backwardSkipTimeInMilliseconds: 10000,
+          forwardSkipTimeInMilliseconds: 10000,
+        ),
+        errorBuilder: (context, errorMessage) {
+          return Container(
+            color: Colors.black,
+            child: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.error_outline, color: Colors.red, size: 64),
+                  SizedBox(height: 16),
+                  Text(
+                    trans("Video Error"),
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    errorMessage ?? trans("Unknown error occurred"),
+                    style: TextStyle(color: Colors.white70),
+                    textAlign: TextAlign.center,
+                  ),
+                  SizedBox(height: 16),
+                  ElevatedButton(
+                    onPressed: () {
+                      // Try to reactivate controller on error
+                      _reactivateController(videoPath, videoTitle, isLocal);
+                    },
+                    style:
+                        ElevatedButton.styleFrom(backgroundColor: Colors.amber),
+                    child: Text(trans("Retry")),
+                  ),
+                  SizedBox(height: 8),
+                  ElevatedButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    style:
+                        ElevatedButton.styleFrom(backgroundColor: Colors.grey),
+                    child: Text(trans("Close")),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+
+      // Create data source based on local or network
+      BetterPlayerDataSource dataSource;
+
+      if (isLocal) {
+        dataSource = BetterPlayerDataSource(
+          BetterPlayerDataSourceType.file,
+          videoPath,
+          bufferingConfiguration: BetterPlayerBufferingConfiguration(
+            minBufferMs: 5000,
+            maxBufferMs: 30000,
+            bufferForPlaybackMs: 2500,
+            bufferForPlaybackAfterRebufferMs: 5000,
+          ),
+          placeholder: Container(
+            color: Colors.black,
+            child: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(color: Colors.amber),
+                  SizedBox(height: 16),
+                  Text(
+                    trans("Loading downloaded video..."),
+                    style: TextStyle(color: Colors.white),
+                  ),
+                  SizedBox(height: 8),
+                  Container(
+                    padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.green.withOpacity(0.8),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.download_done,
+                            color: Colors.white, size: 16),
+                        SizedBox(width: 4),
+                        Text(
+                          trans("Offline"),
+                          style: TextStyle(color: Colors.white, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      } else {
+        dataSource = BetterPlayerDataSource(
+          BetterPlayerDataSourceType.network,
+          videoPath,
+          bufferingConfiguration: BetterPlayerBufferingConfiguration(
+            minBufferMs: 3000,
+            maxBufferMs: 15000,
+            bufferForPlaybackMs: 1500,
+            bufferForPlaybackAfterRebufferMs: 3000,
+          ),
+          cacheConfiguration: BetterPlayerCacheConfiguration(
+            useCache: true,
+            preCacheSize: 1 * 1024 * 1024,
+            maxCacheSize: 200 * 1024 * 1024 * 1024,
+            maxCacheFileSize: 100 * 1024 * 1024 * 1024,
+            key: "cache_${videoPath.hashCode}",
+          ),
+          headers: {
+            'User-Agent':
+                'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15',
+            'Accept': '*/*',
+            'Accept-Encoding': 'identity',
+            'Range': 'bytes=0-',
+            'Connection': 'keep-alive',
+          },
+          placeholder: Container(
+            color: Colors.black,
+            child: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(color: Colors.amber),
+                  SizedBox(height: 16),
+                  Text(
+                    trans("Loading video..."),
+                    style: TextStyle(color: Colors.white),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      }
+
+      // Create and initialize the controller
+      _activeVideoController = BetterPlayerController(
+        betterPlayerConfiguration,
+        betterPlayerDataSource: dataSource,
+      );
+
+      return _activeVideoController;
+    } catch (e) {
+      NyLogger.error('Error creating video controller: $e');
+      _activeVideoController?.dispose();
+      _activeVideoController = null;
+      return null;
     }
   }
 
@@ -1276,7 +1715,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
               ),
               ListTile(
                 leading: Icon(Icons.play_circle_filled, color: Colors.blue),
-                title: Text(trans("Stream Now")),
+                title: Text(trans("Play Now")),
                 subtitle: Text(trans("Watch immediately • Uses data")),
                 onTap: () {
                   Navigator.pop(context);
@@ -1343,180 +1782,18 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
     required bool isLocal,
   }) async {
     try {
-      // Dispose any existing controller first
-      _activeVideoController?.dispose();
-      // Create the configuration for optimal playback
-      BetterPlayerConfiguration betterPlayerConfiguration =
-          BetterPlayerConfiguration(
-        aspectRatio: 16 / 9,
-        autoPlay: true,
-        looping: false,
-        fullScreenByDefault: true,
-        allowedScreenSleep: false,
+      _disposeActiveVideoController();
+      await Future.delayed(Duration(milliseconds: 100));
 
-        autoDetectFullscreenDeviceOrientation: true,
-        autoDetectFullscreenAspectRatio: true,
-        deviceOrientationsOnFullScreen: [
-          DeviceOrientation.landscapeLeft,
-          DeviceOrientation.landscapeRight,
-        ],
-        systemOverlaysAfterFullScreen: SystemUiOverlay.values,
-        deviceOrientationsAfterFullScreen: [DeviceOrientation.portraitUp],
-        controlsConfiguration: BetterPlayerControlsConfiguration(
-          enablePlayPause: true,
-          enableMute: true,
-          enableFullscreen: true,
-          enableSkips: true,
-          enableProgressText: true,
-          enableProgressBar: true,
-          enablePlaybackSpeed: true,
-          enablePip: false,
-          enableRetry: true,
-          showControlsOnInitialize: true,
-          controlsHideTime: Duration(seconds: 3),
-          progressBarPlayedColor: Colors.amber,
-          progressBarHandleColor: Colors.amber,
-          progressBarBackgroundColor: Colors.white.withOpacity(0.3),
-          loadingColor: Colors.amber,
-          iconsColor: Colors.white,
-          overflowModalColor: Colors.black87,
-          overflowModalTextColor: Colors.white,
-          overflowMenuIconsColor: Colors.white,
-          playIcon: Icons.play_arrow,
-          pauseIcon: Icons.pause,
-          muteIcon: Icons.volume_off,
-          unMuteIcon: Icons.volume_up,
-          fullscreenEnableIcon: Icons.fullscreen,
-          fullscreenDisableIcon: Icons.fullscreen_exit,
-          backwardSkipTimeInMilliseconds: 10000,
-          forwardSkipTimeInMilliseconds: 10000,
-        ),
-        // Enhanced buffering for smooth playback
-
-        // Error handling
-        errorBuilder: (context, errorMessage) {
-          return Container(
-            color: Colors.black,
-            child: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.error_outline, color: Colors.red, size: 64),
-                  SizedBox(height: 16),
-                  Text(
-                    trans("Video Error"),
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  SizedBox(height: 8),
-                  Text(
-                    errorMessage ?? trans("Unknown error occurred"),
-                    style: TextStyle(color: Colors.white70),
-                    textAlign: TextAlign.center,
-                  ),
-                  SizedBox(height: 16),
-                  ElevatedButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    style:
-                        ElevatedButton.styleFrom(backgroundColor: Colors.amber),
-                    child: Text(trans("Close")),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
+      _activeVideoController = await _createActiveVideoController(
+        videoPath: videoPath,
+        videoTitle: videoTitle,
+        isLocal: isLocal,
       );
 
-      // Create data source based on local or network
-      BetterPlayerDataSource dataSource;
-
-      if (isLocal) {
-        dataSource = BetterPlayerDataSource(
-          BetterPlayerDataSourceType.file,
-          bufferingConfiguration: BetterPlayerBufferingConfiguration(
-            minBufferMs: 5000, // 5 seconds min buffer
-            maxBufferMs: 30000, // 30 seconds max buffer
-            bufferForPlaybackMs: 2500, // 2.5 seconds to start playback
-            bufferForPlaybackAfterRebufferMs: 5000, // 5 seconds after rebuffer
-          ),
-          videoPath,
-          placeholder: Container(
-            color: Colors.black,
-            child: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  CircularProgressIndicator(color: Colors.amber),
-                  SizedBox(height: 16),
-                  Text(
-                    trans("Loading downloaded video..."),
-                    style: TextStyle(color: Colors.white),
-                  ),
-                  SizedBox(height: 8),
-                  Container(
-                    padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.green.withOpacity(0.8),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.download_done,
-                            color: Colors.white, size: 16),
-                        SizedBox(width: 4),
-                        Text(
-                          trans("Offline"),
-                          style: TextStyle(color: Colors.white, fontSize: 12),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      } else {
-        dataSource = BetterPlayerDataSource(
-            BetterPlayerDataSourceType.network, videoPath,
-            bufferingConfiguration: BetterPlayerBufferingConfiguration(
-              minBufferMs: 3000, // 3 seconds min
-              maxBufferMs: 15000, // 15 seconds max
-              bufferForPlaybackMs: 1500, // 1.5 seconds to start ⭐
-              bufferForPlaybackAfterRebufferMs:
-                  3000, // 3 seconds after rebuffer
-            ),
-            // Optimized caching for network videos
-            cacheConfiguration: BetterPlayerCacheConfiguration(
-              useCache: true,
-              preCacheSize: 1 * 1024 * 1024, // 20MB pre-cache
-              maxCacheSize: 200 * 1024 * 1024 * 1024, // 200MB max cache
-              maxCacheFileSize: 100 * 1024 * 1024 * 1024, // 100MB max file
-              key: "cache_${videoPath.hashCode}",
-            ),
-            // Enhanced headers for better compatibility
-            headers: {
-              'User-Agent':
-                  'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15',
-              'Accept': '*/*',
-              'Accept-Encoding': 'identity',
-              'Range': 'bytes=0-',
-              'Connection': 'keep-alive',
-            },
-            //   // Loading placeholder
-            placeholder: Container());
-
-        _activeVideoController = BetterPlayerController(
-          betterPlayerConfiguration,
-          betterPlayerDataSource: dataSource,
-        );
+      if (_activeVideoController == null) {
+        throw Exception("Failed to create active video controller");
       }
-
       // Show the video player in fullscreen dialog
       await showDialog(
         context: context,
@@ -1525,8 +1802,8 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
         builder: (BuildContext context) {
           return WillPopScope(
             onWillPop: () async {
-              _activeVideoController?.dispose();
-              _activeVideoController = null;
+              // Don't dispose here, let the controller be reused
+              _pauseActiveVideoSafely();
               return true;
             },
             child: Scaffold(
@@ -1540,7 +1817,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
                     ),
                   ),
 
-                  // Custom header overlay - KEEP ALL YOUR EXISTING UI
+                  // Custom header overlay (your existing UI code)
                   Positioned(
                     top: 0,
                     left: 0,
@@ -1576,9 +1853,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
                                   padding: EdgeInsets.all(8),
                                 ),
                               ),
-
                               SizedBox(width: 12),
-
                               // Video title
                               Expanded(
                                 child: Column(
@@ -1607,9 +1882,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
                                   ],
                                 ),
                               ),
-
                               SizedBox(width: 12),
-
                               // Status indicator
                               Container(
                                 padding: EdgeInsets.symmetric(
@@ -1663,19 +1936,254 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
           );
         },
       ).then((_) {
-        // Dispose controller when dialog closes
-        _activeVideoController?.dispose();
-        _activeVideoController = null;
+        // Pause the controller when dialog closes but don't dispose
+        // This allows for reactivation later
+        _activeVideoController?.pause();
       }).catchError((error) {
-        // ✅ ADD ERROR HANDLING
+        NyLogger.error('Error in video player dialog: $error');
+        // Only dispose on error
         _activeVideoController?.dispose();
         _activeVideoController = null;
       });
     } catch (e) {
-      // ✅ ENSURE CLEANUP ON ERRORS
+      NyLogger.error('Error showing video player: $e');
+      // Clean up on error
+      _disposeActiveVideoController();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(trans("Failed to play video: ${e.toString()}")),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    }
+  }
+
+  // ✅ Ensure active controller exists or create new one
+  Future<BetterPlayerController?> _ensureActiveController({
+    required String videoPath,
+    required String videoTitle,
+    required bool isLocal,
+  }) async {
+    // If controller exists and is not disposed, return it
+    if (_activeVideoController != null) {
+      try {
+        // Check if controller is still valid by accessing a property
+        _activeVideoController!.betterPlayerConfiguration;
+        return _activeVideoController;
+      } catch (e) {
+        // Controller is disposed, need to recreate
+        NyLogger.info('Active controller was disposed, recreating...');
+        _activeVideoController = null;
+      }
+    }
+
+    // Controller is null or disposed, create a new one
+    return await _createActiveVideoController(
+      videoPath: videoPath,
+      videoTitle: videoTitle,
+      isLocal: isLocal,
+    );
+  }
+
+  Future<BetterPlayerController?> _createActiveVideoController({
+    required String videoPath,
+    required String videoTitle,
+    required bool isLocal,
+  }) async {
+    try {
+      // Dispose any existing controller first
+      _activeVideoController?.dispose();
+
+      // Create the configuration
+      BetterPlayerConfiguration betterPlayerConfiguration =
+          BetterPlayerConfiguration(
+        aspectRatio: 16 / 9,
+        autoPlay: true,
+        looping: false,
+        fullScreenByDefault: true,
+        allowedScreenSleep: false,
+        autoDetectFullscreenDeviceOrientation: true,
+        autoDetectFullscreenAspectRatio: true,
+        deviceOrientationsOnFullScreen: [
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
+        ],
+        systemOverlaysAfterFullScreen: SystemUiOverlay.values,
+        deviceOrientationsAfterFullScreen: [DeviceOrientation.portraitUp],
+        controlsConfiguration: BetterPlayerControlsConfiguration(
+          enablePlayPause: true,
+          enableMute: true,
+          enableFullscreen: true,
+          enableSkips: true,
+          enableProgressText: true,
+          enableProgressBar: true,
+          enablePlaybackSpeed: true,
+          enablePip: false,
+          enableRetry: true,
+          showControlsOnInitialize: true,
+          controlsHideTime: Duration(seconds: 3),
+          progressBarPlayedColor: Colors.amber,
+          progressBarHandleColor: Colors.amber,
+          progressBarBackgroundColor: Colors.white.withOpacity(0.3),
+          loadingColor: Colors.amber,
+          iconsColor: Colors.white,
+          backwardSkipTimeInMilliseconds: 10000,
+          forwardSkipTimeInMilliseconds: 10000,
+        ),
+        errorBuilder: (context, errorMessage) {
+          return _buildErrorWidget(
+              errorMessage, videoPath, videoTitle, isLocal);
+        },
+      );
+
+      // Create data source
+      BetterPlayerDataSource dataSource;
+      if (isLocal) {
+        dataSource = BetterPlayerDataSource(
+          BetterPlayerDataSourceType.file,
+          videoPath,
+          bufferingConfiguration: BetterPlayerBufferingConfiguration(
+            minBufferMs: 5000,
+            maxBufferMs: 30000,
+            bufferForPlaybackMs: 2500,
+            bufferForPlaybackAfterRebufferMs: 5000,
+          ),
+          placeholder: Container(
+            color: Colors.black,
+            child: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(color: Colors.amber),
+                  SizedBox(height: 16),
+                  Text(
+                    trans("Loading downloaded video..."),
+                    style: TextStyle(color: Colors.white),
+                  ),
+                  SizedBox(height: 8),
+                  Container(
+                    padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.green.withOpacity(0.8),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.download_done,
+                            color: Colors.white, size: 16),
+                        SizedBox(width: 4),
+                        Text(
+                          trans("Offline"),
+                          style: TextStyle(color: Colors.white, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      } else {
+        dataSource = BetterPlayerDataSource(
+          BetterPlayerDataSourceType.network,
+          videoPath,
+          bufferingConfiguration: BetterPlayerBufferingConfiguration(
+            minBufferMs: 3000,
+            maxBufferMs: 15000,
+            bufferForPlaybackMs: 1500,
+            bufferForPlaybackAfterRebufferMs: 3000,
+          ),
+          cacheConfiguration: BetterPlayerCacheConfiguration(
+            useCache: true,
+            preCacheSize: 1 * 1024 * 1024,
+            maxCacheSize: 200 * 1024 * 1024 * 1024,
+            maxCacheFileSize: 100 * 1024 * 1024 * 1024,
+            key: "cache_${videoPath.hashCode}",
+          ),
+          headers: {
+            'User-Agent':
+                'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15',
+            'Accept': '*/*',
+            'Accept-Encoding': 'identity',
+            'Range': 'bytes=0-',
+            'Connection': 'keep-alive',
+          },
+          placeholder: Container(
+            color: Colors.black,
+            child: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(color: Colors.amber),
+                  SizedBox(height: 16),
+                  Text(
+                    trans("Loading video..."),
+                    style: TextStyle(color: Colors.white),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      }
+
+      // Create and return the controller
+      _activeVideoController = BetterPlayerController(
+        betterPlayerConfiguration,
+        betterPlayerDataSource: dataSource,
+      );
+
+      return _activeVideoController;
+    } catch (e) {
+      NyLogger.error('Error creating active video controller: $e');
       _activeVideoController?.dispose();
       _activeVideoController = null;
-      // ... your error handling
+      return null;
+    }
+  }
+
+  // ✅ Reactivate controller method using _activeVideoController
+  Future<void> _reactivateController(
+      String videoPath, String videoTitle, bool isLocal) async {
+    try {
+      BetterPlayerController? newController = await _ensureActiveController(
+        videoPath: videoPath,
+        videoTitle: videoTitle,
+        isLocal: isLocal,
+      );
+
+      if (newController != null && mounted) {
+        setState(() {
+          // Controller is now active
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(trans("Video player reactivated")),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      } else {
+        throw Exception("Failed to create active controller");
+      }
+    } catch (e) {
+      NyLogger.error('Error reactivating active controller: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(trans("Failed to reactivate video player")),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
     }
   }
 
@@ -1789,27 +2297,27 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
                 ),
 
                 // Play online option (if available)
-                if (hasOnlineUrl && _isOnline)
-                  ListTile(
-                    leading: Container(
-                      padding: EdgeInsets.all(6),
-                      decoration: BoxDecoration(
-                        color: Colors.blue.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Icon(Icons.cloud, color: Colors.blue, size: 20),
-                    ),
-                    title: Text(trans("Stream Online")),
-                    subtitle: Text(trans("Uses data • Latest version")),
-                    onTap: () {
-                      Navigator.pop(context);
-                      _launchVideoPlayer(
-                        index: index,
-                        preferOffline: false,
-                        videoTitle: item['title'] ?? 'Video ${index + 1}',
-                      );
-                    },
-                  ),
+                // if (hasOnlineUrl && _isOnline)
+                //   ListTile(
+                //     leading: Container(
+                //       padding: EdgeInsets.all(6),
+                //       decoration: BoxDecoration(
+                //         color: Colors.blue.withOpacity(0.1),
+                //         borderRadius: BorderRadius.circular(6),
+                //       ),
+                //       child: Icon(Icons.cloud, color: Colors.blue, size: 20),
+                //     ),
+                //     title: Text(trans("Stream Online")),
+                //     subtitle: Text(trans("Uses data • Latest version")),
+                //     onTap: () {
+                //       Navigator.pop(context);
+                //       _launchVideoPlayer(
+                //         index: index,
+                //         preferOffline: false,
+                //         videoTitle: item['title'] ?? 'Video ${index + 1}',
+                //       );
+                //     },
+                //   ),
 
                 Divider(),
 

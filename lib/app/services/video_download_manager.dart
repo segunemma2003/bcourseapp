@@ -32,6 +32,16 @@ class VideoDownloadManager {
   final Map<String, double> _watermarkProgress = {};
   final Map<String, VideoDownloadStatus> _detailedStatus = {};
 
+  final List<DownloadQueueItem> _highPriorityQueue = [];
+  final List<DownloadQueueItem> _normalPriorityQueue = [];
+  final List<DownloadQueueItem> _lowPriorityQueue = [];
+
+  // Per-queue processing locks
+  final Map<String, bool> _queueProcessingLocks = {};
+
+  // Dynamic concurrent limit based on network speed
+  int _dynamicConcurrentLimit = 2;
+
   // Download speed tracking
   final Map<String, List<int>> _downloadSpeedTracker = {};
   final Map<String, DateTime> _downloadStartTime = {};

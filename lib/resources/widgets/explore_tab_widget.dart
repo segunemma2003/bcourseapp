@@ -468,7 +468,7 @@ class _ExploreTabState extends NyState<ExploreTab> {
 
   Widget _buildHorizontalCourseList(List<Course> courses) {
     return SizedBox(
-      height: 200,
+      height: 225,
       width: MediaQuery.of(context).size.width,
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
