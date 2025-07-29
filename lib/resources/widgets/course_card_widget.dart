@@ -15,12 +15,12 @@ class CourseCard extends StatelessWidget {
         routeTo(CourseDetailPage.path, data: {'course': course});
       },
       child: Container(
-        width: 200, // Set a fixed width for the card
+        width: 200, // Increased width to make it rectangular
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Container(
-              height: 120, // Set a fixed height for the image container
+              height: 120, // Reduced height to make it rectangular (200x120)
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(8),
               ),

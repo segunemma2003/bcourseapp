@@ -34,7 +34,7 @@ if (keystorePropertiesFile.exists()) {
 android {
     namespace "com.bhavani.com"
     compileSdk 35
-    ndkVersion = "25.1.8937393"
+    ndkVersion = "26.1.10909125"
 
     packagingOptions {
         exclude 'META-INF/DEPENDENCIES'
@@ -68,7 +68,7 @@ android {
         applicationId "com.bhavani.com"
         // FFmpeg plugin requires minSdkVersion 24
         minSdkVersion 24
-        targetSdkVersion 34
+        targetSdkVersion 35
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
         multiDexEnabled true
@@ -132,9 +132,9 @@ flutter {
 
 dependencies {
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
-    implementation platform('com.google.firebase:firebase-bom:33.14.0')
+    implementation platform('com.google.firebase:firebase-bom:33.15.0')
     implementation 'com.google.firebase:firebase-analytics'
     implementation 'com.google.firebase:firebase-crashlytics'
-    implementation 'com.google.android.gms:play-services-auth:20.7.0'
+    implementation 'com.google.android.gms:play-services-auth:21.0.0'
     implementation 'androidx.multidex:multidex:2.0.1'
 }

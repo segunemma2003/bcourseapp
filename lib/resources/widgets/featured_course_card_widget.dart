@@ -16,7 +16,7 @@ class FeaturedCourseCard extends StatelessWidget {
       },
       child: Container(
         width: MediaQuery.of(context).size.width,
-        height: 180,
+        height: 140, // Reduced height to make it more rectangular
         decoration: BoxDecoration(
           color: Colors.white,
           boxShadow: [

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_app/app/networking/user_api_service.dart';
 import 'package:flutter_app/resources/pages/faq_page.dart';
 import 'package:flutter_app/resources/pages/help_center_page.dart';
+import 'package:flutter_app/resources/pages/legal_page.dart';
 import 'package:flutter_app/resources/pages/payment_details_page.dart';
 import 'package:flutter_app/resources/pages/profile_details_page.dart';
 import 'package:flutter_app/resources/pages/purchase_history_page.dart';
@@ -372,6 +373,10 @@ class _ProfileTabState extends NyState<ProfileTab> {
     routeTo(FaqPage.path);
   }
 
+  void _navigateToLegal() {
+    routeTo(LegalPage.path);
+  }
+
   void _navigateToLogin() {
     routeTo(SigninPage.path);
   }
@@ -577,6 +582,13 @@ class _ProfileTabState extends NyState<ProfileTab> {
             icon: Icons.question_mark_outlined,
             title: trans("FAQs"),
             onTap: _navigateToFaqs,
+          ),
+
+          // Legal
+          _buildMenuItem(
+            icon: Icons.gavel_outlined,
+            title: trans("Legal"),
+            onTap: _navigateToLegal,
             showBottomBorder: false,
           ),
 

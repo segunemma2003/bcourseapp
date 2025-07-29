@@ -863,13 +863,13 @@ class _SearchTabState extends NyState<SearchTab> {
                   ),
                   child: Image.network(
                     course.image,
-                    width: 100,
-                    height: 100,
+                    width: 140, // Increased width to make it rectangular
+                    height: 100, // Keep height for rectangular shape
                     fit: BoxFit.cover,
                     errorBuilder: (context, error, stackTrace) {
                       return Container(
-                        width: 100,
-                        height: 100,
+                        width: 140, // Increased width to make it rectangular
+                        height: 100, // Keep height for rectangular shape
                         color: Colors.grey.shade300,
                         child: Icon(
                           Icons.image_not_supported,

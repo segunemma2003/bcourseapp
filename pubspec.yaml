@@ -9,7 +9,7 @@ description: A new Nylo Flutter application.
 
 publish_to: 'none'
 
-version: 1.0.0+11
+version: 1.0.2+13
 
 environment:
   sdk: '>=3.4.0 <4.0.0'
@@ -38,7 +38,7 @@ dependencies:
   chewie: ^1.11.3
   permission_handler: ^12.0.0+1
   media_kit: ^1.2.0
-  ffmpeg_kit_flutter_new: ^1.4.1
+  # ffmpeg_kit_flutter_new: ^1.4.0  # Temporarily disabled due to iOS build issues
   mime: ^2.0.0
   flutter_background_service: ^5.1.0
   flutter_background_service_android: ^6.3.0
@@ -63,6 +63,7 @@ dependencies:
   storage_info: ^1.0.0
   flutter_web_auth_2: ^4.1.0
   better_player_plus: ^1.0.8
+  webview_flutter: ^4.7.0
 
 
 
@@ -72,7 +73,7 @@ dev_dependencies:
   firebase_crashlytics_platform_interface: ^3.6.0
   # The following line 'flutter_lints' activates a set of recommended lints for Flutter apps,
   # packages, and plugins designed to encourage good coding practices.
-#  flutter_lints: ^5.0.0
+  flutter_lints: ^5.0.0
   flutter_test:
     sdk: flutter
 

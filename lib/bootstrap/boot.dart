@@ -24,7 +24,7 @@ class Boot {
       // Set up Crashlytics context early
       await _setCrashlyticsContext();
 
-      if (getEnv('SHOW_SPLASH_SCREEN', defaultValue: false)) {
+      if (getEnv('SHOW_SPLASH_SCREEN', defaultValue: true)) {
         runApp(SplashScreen.app());
       }
 

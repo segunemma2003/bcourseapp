@@ -594,12 +594,12 @@ class _WishlistTabState extends NyState<WishlistTab> {
                   ),
                   child: CachedNetworkImage(
                     imageUrl: wishlistItem.courseImage,
-                    width: 100,
-                    height: 100,
+                    width: 140, // Increased width to make it rectangular
+                    height: 100, // Keep height for rectangular shape
                     fit: BoxFit.cover,
                     placeholder: (context, url) => Container(
-                      width: 100,
-                      height: 100,
+                      width: 140, // Increased width to make it rectangular
+                      height: 100, // Keep height for rectangular shape
                       color: Colors.grey.shade300,
                       child: Center(
                         child: SizedBox(
@@ -614,8 +614,8 @@ class _WishlistTabState extends NyState<WishlistTab> {
                       ),
                     ),
                     errorWidget: (context, error, stackTrace) => Container(
-                      width: 100,
-                      height: 100,
+                      width: 140, // Increased width to make it rectangular
+                      height: 100, // Keep height for rectangular shape
                       color: Colors.grey.shade300,
                       child: Icon(
                         Icons.image_not_supported,

@@ -468,19 +468,16 @@ class _ExploreTabState extends NyState<ExploreTab> {
 
   Widget _buildHorizontalCourseList(List<Course> courses) {
     return SizedBox(
-      height: 225,
+      height: 200,
       width: MediaQuery.of(context).size.width,
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
         padding: EdgeInsets.symmetric(horizontal: 16),
         itemCount: courses.length,
         itemBuilder: (context, index) {
-          return ConstrainedBox(
-            constraints: BoxConstraints(maxWidth: 185),
-            child: Container(
-              margin: EdgeInsets.only(right: 16),
-              child: CourseCard(course: courses[index]),
-            ),
+          return Container(
+            margin: EdgeInsets.only(right: 16),
+            child: CourseCard(course: courses[index]),
           );
         },
       ),

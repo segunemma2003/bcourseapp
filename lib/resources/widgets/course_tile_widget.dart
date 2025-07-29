@@ -24,16 +24,16 @@ class CourseTile extends StatelessWidget {
             ClipRRect(
               borderRadius: BorderRadius.circular(8),
               child: SizedBox(
-                width: 80, // Fixed width
-                height: 80, // Fixed height
+                width: 120, // Increased width to make it rectangular
+                height: 80, // Keep height for rectangular shape
                 child: Image.network(
                   course.image,
-                  width: 80, // Explicitly set width
+                  width: 120, // Explicitly set width
                   height: 80, // Explicitly set height
                   fit: BoxFit.cover,
                   errorBuilder: (context, error, stackTrace) {
                     return Container(
-                      width: 80,
+                      width: 120,
                       height: 80,
                       color: Colors.grey[300],
                       child: Icon(
@@ -45,7 +45,7 @@ class CourseTile extends StatelessWidget {
                   loadingBuilder: (context, child, loadingProgress) {
                     if (loadingProgress == null) return child;
                     return Container(
-                      width: 80,
+                      width: 120,
                       height: 80,
                       color: Colors.grey[200],
                       child: Center(
