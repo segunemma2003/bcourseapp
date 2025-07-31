@@ -435,6 +435,10 @@ class _ProfileDetailsPageState extends NyPage<ProfileDetailsPage> {
           TextField(
             controller: _nameController,
             style: TextStyle(fontSize: 14),
+            onSubmitted: (value) {
+              // Dismiss keyboard when done is pressed
+              FocusScope.of(context).unfocus();
+            },
             decoration: InputDecoration(
               hintText: trans("Enter your full name"),
               filled: true,
@@ -511,6 +515,10 @@ class _ProfileDetailsPageState extends NyPage<ProfileDetailsPage> {
             controller: _phoneController,
             keyboardType: TextInputType.phone,
             style: TextStyle(fontSize: 14),
+            onSubmitted: (value) {
+              // Dismiss keyboard when done is pressed
+              FocusScope.of(context).unfocus();
+            },
             decoration: InputDecoration(
               hintText: trans("Enter your phone number"),
               filled: true,

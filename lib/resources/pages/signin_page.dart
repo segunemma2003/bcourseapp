@@ -259,6 +259,10 @@ class _SigninPageState extends NyPage<SigninPage> {
       controller: controller,
       keyboardType: keyboardType,
       validator: validator,
+      onFieldSubmitted: (value) {
+        // Dismiss keyboard when done is pressed
+        FocusScope.of(context).unfocus();
+      },
       style: TextStyle(fontSize: 14),
       decoration: InputDecoration(
         hintText: hintText,
@@ -292,6 +296,10 @@ class _SigninPageState extends NyPage<SigninPage> {
       controller: controller,
       obscureText: obscureText,
       validator: validator,
+      onFieldSubmitted: (value) {
+        // Dismiss keyboard when done is pressed
+        FocusScope.of(context).unfocus();
+      },
       style: TextStyle(fontSize: 14),
       decoration: InputDecoration(
         hintText: hintText,

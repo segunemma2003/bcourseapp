@@ -468,7 +468,7 @@ class _ExploreTabState extends NyState<ExploreTab> {
 
   Widget _buildHorizontalCourseList(List<Course> courses) {
     return SizedBox(
-      height: 200,
+      height: 220, // Increased height to prevent overflow
       width: MediaQuery.of(context).size.width,
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
@@ -508,7 +508,7 @@ class _ExploreTabState extends NyState<ExploreTab> {
   // Loading placeholders for better UX during data fetching
   Widget _buildCarouselPlaceholder() {
     return SizedBox(
-      height: 200,
+      height: 220, // Increased height to match other placeholders
       width: MediaQuery.of(context).size.width,
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
@@ -530,7 +530,7 @@ class _ExploreTabState extends NyState<ExploreTab> {
 
   Widget _buildHorizontalListPlaceholder() {
     return SizedBox(
-      height: 200,
+      height: 220, // Increased height to match the actual list
       width: MediaQuery.of(context).size.width,
       child: ListView.builder(
         scrollDirection: Axis.horizontal,

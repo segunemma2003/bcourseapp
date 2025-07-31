@@ -314,6 +314,10 @@ class _SignUpPageState extends NyPage<SignUpPage> {
       controller: controller,
       keyboardType: keyboardType,
       validator: validator,
+      onFieldSubmitted: (value) {
+        // Dismiss keyboard when done is pressed
+        FocusScope.of(context).unfocus();
+      },
       style: TextStyle(fontSize: 11),
       decoration: InputDecoration(
         hintText: hintText,
@@ -347,6 +351,10 @@ class _SignUpPageState extends NyPage<SignUpPage> {
       controller: controller,
       obscureText: obscureText,
       validator: validator,
+      onFieldSubmitted: (value) {
+        // Dismiss keyboard when done is pressed
+        FocusScope.of(context).unfocus();
+      },
       style: TextStyle(fontSize: 11),
       decoration: InputDecoration(
         hintText: hintText,

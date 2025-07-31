@@ -1994,6 +1994,13 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
     required String videoTitle,
     required bool isLocal,
   }) async {
+    // For iOS network videos, use enhanced configuration
+    if (Platform.isIOS && !isLocal) {
+      return await _createIOSEnhancedVideoController(
+        videoPath: videoPath,
+        videoTitle: videoTitle,
+      );
+    }
     try {
       // Dispose any existing controller first
       _activeVideoController?.dispose();
@@ -3233,5 +3240,236 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
         ),
       ),
     );
+  }
+
+  // iOS-specific enhanced video controller for better compatibility
+  Future<BetterPlayerController?> _createIOSEnhancedVideoController({
+    required String videoPath,
+    required String videoTitle,
+  }) async {
+    // Try enhanced configuration first, then fallback to standard
+    try {
+      return await _createIOSEnhancedVideoControllerInternal(
+        videoPath: videoPath,
+        videoTitle: videoTitle,
+      );
+    } catch (e) {
+      NyLogger.error('Enhanced iOS controller failed, trying standard: $e');
+      // Fallback to standard controller (skip iOS check to avoid recursion)
+      try {
+        // Dispose any existing controller first
+        _activeVideoController?.dispose();
+
+        // Create the configuration
+        BetterPlayerConfiguration betterPlayerConfiguration =
+            BetterPlayerConfiguration(
+          aspectRatio: 16 / 9,
+          autoPlay: true,
+          looping: false,
+          fullScreenByDefault: true,
+          allowedScreenSleep: false,
+          autoDetectFullscreenDeviceOrientation: true,
+          autoDetectFullscreenAspectRatio: true,
+          deviceOrientationsOnFullScreen: [
+            DeviceOrientation.landscapeLeft,
+            DeviceOrientation.landscapeRight,
+          ],
+          systemOverlaysAfterFullScreen: SystemUiOverlay.values,
+          deviceOrientationsAfterFullScreen: [DeviceOrientation.portraitUp],
+          controlsConfiguration: BetterPlayerControlsConfiguration(
+            enablePlayPause: true,
+            enableMute: true,
+            enableFullscreen: true,
+            enableSkips: true,
+            enableProgressText: true,
+            enableProgressBar: true,
+            enablePlaybackSpeed: true,
+            enablePip: false,
+            enableRetry: true,
+            showControlsOnInitialize: true,
+            controlsHideTime: Duration(seconds: 3),
+            progressBarPlayedColor: Colors.amber,
+            progressBarHandleColor: Colors.amber,
+            progressBarBackgroundColor: Colors.white.withOpacity(0.3),
+            loadingColor: Colors.amber,
+            iconsColor: Colors.white,
+            backwardSkipTimeInMilliseconds: 10000,
+            forwardSkipTimeInMilliseconds: 10000,
+          ),
+          errorBuilder: (context, errorMessage) {
+            return _buildErrorWidget(
+                errorMessage, videoPath, videoTitle, false);
+          },
+        );
+
+        // Create standard data source
+        BetterPlayerDataSource dataSource = BetterPlayerDataSource(
+          BetterPlayerDataSourceType.network,
+          videoPath,
+          bufferingConfiguration: BetterPlayerBufferingConfiguration(
+            minBufferMs: 3000,
+            maxBufferMs: 15000,
+            bufferForPlaybackMs: 1500,
+            bufferForPlaybackAfterRebufferMs: 3000,
+          ),
+          cacheConfiguration: BetterPlayerCacheConfiguration(
+            useCache: true,
+            preCacheSize: 1 * 1024 * 1024,
+            maxCacheSize: 200 * 1024 * 1024 * 1024,
+            maxCacheFileSize: 100 * 1024 * 1024 * 1024,
+            key: "cache_${videoPath.hashCode}",
+          ),
+          headers: {
+            'User-Agent':
+                'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15',
+            'Accept': '*/*',
+            'Accept-Encoding': 'identity',
+            'Range': 'bytes=0-',
+            'Connection': 'keep-alive',
+          },
+          placeholder: Container(
+            color: Colors.black,
+            child: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(color: Colors.amber),
+                  SizedBox(height: 16),
+                  Text(
+                    trans("Loading video..."),
+                    style: TextStyle(color: Colors.white),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+
+        // Create and return the controller
+        _activeVideoController = BetterPlayerController(
+          betterPlayerConfiguration,
+          betterPlayerDataSource: dataSource,
+        );
+
+        return _activeVideoController;
+      } catch (e) {
+        NyLogger.error('Error creating fallback video controller: $e');
+        return null;
+      }
+    }
+  }
+
+  // Internal iOS enhanced video controller
+  Future<BetterPlayerController?> _createIOSEnhancedVideoControllerInternal({
+    required String videoPath,
+    required String videoTitle,
+  }) async {
+    try {
+      // Dispose any existing controller first
+      _activeVideoController?.dispose();
+
+      // Create iOS-specific configuration
+      BetterPlayerConfiguration betterPlayerConfiguration =
+          BetterPlayerConfiguration(
+        aspectRatio: 16 / 9,
+        autoPlay: true,
+        looping: false,
+        fullScreenByDefault: true,
+        allowedScreenSleep: false,
+        autoDetectFullscreenDeviceOrientation: true,
+        autoDetectFullscreenAspectRatio: true,
+        deviceOrientationsOnFullScreen: [
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
+        ],
+        systemOverlaysAfterFullScreen: SystemUiOverlay.values,
+        deviceOrientationsAfterFullScreen: [DeviceOrientation.portraitUp],
+        controlsConfiguration: BetterPlayerControlsConfiguration(
+          enablePlayPause: true,
+          enableMute: true,
+          enableFullscreen: true,
+          enableSkips: true,
+          enableProgressText: true,
+          enableProgressBar: true,
+          enablePlaybackSpeed: true,
+          enablePip: false,
+          enableRetry: true,
+          showControlsOnInitialize: true,
+          controlsHideTime: Duration(seconds: 3),
+          progressBarPlayedColor: Colors.amber,
+          progressBarHandleColor: Colors.amber,
+          progressBarBackgroundColor: Colors.white.withOpacity(0.3),
+          loadingColor: Colors.amber,
+          iconsColor: Colors.white,
+          backwardSkipTimeInMilliseconds: 10000,
+          forwardSkipTimeInMilliseconds: 10000,
+        ),
+        errorBuilder: (context, errorMessage) {
+          return _buildErrorWidget(errorMessage, videoPath, videoTitle, false);
+        },
+      );
+
+      // Create iOS-specific data source with enhanced buffering
+      // Use original URL without modification to preserve AWS S3 signature
+      BetterPlayerDataSource dataSource = BetterPlayerDataSource(
+        BetterPlayerDataSourceType.network,
+        videoPath, // Use original URL without transformation
+        bufferingConfiguration: BetterPlayerBufferingConfiguration(
+          minBufferMs: 300000, // 5 minutes for iOS
+          maxBufferMs: 1200000, // 20 minutes for iOS
+          bufferForPlaybackMs: 120000, // 2 minutes for iOS
+          bufferForPlaybackAfterRebufferMs: 300000, // 5 minutes for iOS
+        ),
+        cacheConfiguration: BetterPlayerCacheConfiguration(
+          useCache: true,
+          preCacheSize: 10 * 1024 * 1024, // 10MB pre-cache for iOS
+          maxCacheSize: 200 * 1024 * 1024 * 1024,
+          maxCacheFileSize: 100 * 1024 * 1024 * 1024,
+          key: "ios_enhanced_cache_${videoPath.hashCode}",
+        ),
+        headers: {
+          'User-Agent':
+              'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+          'Accept': '*/*',
+          'Accept-Encoding': 'identity',
+          'Range': 'bytes=0-',
+          'Connection': 'keep-alive',
+        },
+        placeholder: Container(
+          color: Colors.black,
+          child: Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                CircularProgressIndicator(color: Colors.amber),
+                SizedBox(height: 16),
+                Text(
+                  trans("Loading video..."),
+                  style: TextStyle(color: Colors.white),
+                ),
+                SizedBox(height: 8),
+                Text(
+                  "iOS Enhanced Loading",
+                  style: TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      // Create and return the controller
+      _activeVideoController = BetterPlayerController(
+        betterPlayerConfiguration,
+        betterPlayerDataSource: dataSource,
+      );
+
+      return _activeVideoController;
+    } catch (e) {
+      NyLogger.error('Error creating iOS enhanced video controller: $e');
+      _activeVideoController?.dispose();
+      _activeVideoController = null;
+      return null;
+    }
   }
 }
