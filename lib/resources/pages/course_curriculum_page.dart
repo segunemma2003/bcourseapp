@@ -6,6 +6,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_app/app/services/video_service_utils.dart';
+import 'package:http/http.dart' as http;
 import 'package:nylo_framework/nylo_framework.dart';
 import 'package:flutter_app/app/models/course.dart';
 import 'package:flutter_app/app/services/video_service.dart';
@@ -743,10 +744,30 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
 
       if (savedProgress is String) {
         try {
-          // Try to parse as JSON
-          progressMap = jsonDecode(savedProgress);
+          // Check if it looks like a Dart Map string format (starts with {completedLessons:)
+          if (savedProgress.trim().startsWith('{completedLessons:')) {
+            // This is a Dart Map string, not JSON - clear it and start fresh
+            NyLogger.info(
+                'Found Dart Map format progress data, clearing and starting fresh');
+            await NyStorage.delete(key);
+            return;
+          }
+
+          // Check if it's valid JSON before parsing
+          if (savedProgress.trim().startsWith('{"') &&
+              savedProgress.trim().endsWith('}')) {
+            progressMap = jsonDecode(savedProgress);
+          } else {
+            // Handle legacy format or corrupted data
+            NyLogger.info(
+                'Progress data is not valid JSON, clearing and starting fresh');
+            await NyStorage.delete(key);
+            return;
+          }
         } catch (e) {
-          NyLogger.error('Error parsing progress string: $e');
+          NyLogger.error('Error parsing progress JSON: $e');
+          // Clear corrupted data
+          await NyStorage.delete(key);
           return;
         }
       } else if (savedProgress is Map) {
@@ -755,6 +776,8 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
       } else {
         NyLogger.error(
             'Unexpected progress data type: ${savedProgress.runtimeType}');
+        // Clear unexpected data format
+        await NyStorage.delete(key);
         return;
       }
 
@@ -774,6 +797,13 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
       }
     } catch (e) {
       NyLogger.error('Error loading lesson completion status: $e');
+      // Clear any corrupted progress data
+      try {
+        String key = 'course_progress_${course!.id}';
+        await NyStorage.delete(key);
+      } catch (clearError) {
+        NyLogger.error('Error clearing corrupted progress data: $clearError');
+      }
     }
   }
 
@@ -1785,6 +1815,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
       _disposeActiveVideoController();
       await Future.delayed(Duration(milliseconds: 100));
 
+      // Use the enhanced controller creation method
       _activeVideoController = await _createActiveVideoController(
         videoPath: videoPath,
         videoTitle: videoTitle,
@@ -1794,6 +1825,7 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
       if (_activeVideoController == null) {
         throw Exception("Failed to create active video controller");
       }
+
       // Show the video player in fullscreen dialog
       await showDialog(
         context: context,
@@ -1802,7 +1834,6 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
         builder: (BuildContext context) {
           return WillPopScope(
             onWillPop: () async {
-              // Don't dispose here, let the controller be reused
               _pauseActiveVideoSafely();
               return true;
             },
@@ -1810,126 +1841,59 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
               backgroundColor: Colors.black,
               body: Stack(
                 children: [
-                  // Video player
+                  // Video player with error handling
                   Center(
-                    child: BetterPlayer(
-                      controller: _activeVideoController!,
+                    child: Builder(
+                      builder: (context) {
+                        try {
+                          return BetterPlayer(
+                            controller: _activeVideoController!,
+                          );
+                        } catch (e) {
+                          NyLogger.error('BetterPlayer widget error: $e');
+                          return Container(
+                            color: Colors.black,
+                            child: Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(Icons.error_outline,
+                                      color: Colors.red, size: 64),
+                                  SizedBox(height: 16),
+                                  Text(
+                                    trans("Video Player Error"),
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  SizedBox(height: 8),
+                                  Text(
+                                    trans("Unable to display video player"),
+                                    style: TextStyle(
+                                        color: Colors.white70, fontSize: 14),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                  SizedBox(height: 24),
+                                  ElevatedButton(
+                                    onPressed: () =>
+                                        Navigator.of(context).pop(),
+                                    style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.amber),
+                                    child: Text(trans("Close")),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        }
+                      },
                     ),
                   ),
 
-                  // Custom header overlay (your existing UI code)
-                  Positioned(
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: [
-                            Colors.black.withOpacity(0.8),
-                            Colors.black.withOpacity(0.4),
-                            Colors.transparent,
-                          ],
-                          stops: [0.0, 0.5, 1.0],
-                        ),
-                      ),
-                      child: SafeArea(
-                        child: Padding(
-                          padding: const EdgeInsets.all(16.0),
-                          child: Row(
-                            children: [
-                              // Close button
-                              Container(
-                                decoration: BoxDecoration(
-                                  color: Colors.black.withOpacity(0.5),
-                                  shape: BoxShape.circle,
-                                ),
-                                child: IconButton(
-                                  onPressed: () => Navigator.of(context).pop(),
-                                  icon: Icon(Icons.close,
-                                      color: Colors.white, size: 24),
-                                  padding: EdgeInsets.all(8),
-                                ),
-                              ),
-                              SizedBox(width: 12),
-                              // Video title
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      videoTitle,
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                    SizedBox(height: 4),
-                                    Text(
-                                      isLocal
-                                          ? trans("Downloaded Video")
-                                          : trans("Streaming Video"),
-                                      style: TextStyle(
-                                        color: Colors.white70,
-                                        fontSize: 12,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              SizedBox(width: 12),
-                              // Status indicator
-                              Container(
-                                padding: EdgeInsets.symmetric(
-                                    horizontal: 12, vertical: 8),
-                                decoration: BoxDecoration(
-                                  color: isLocal
-                                      ? Colors.green.withOpacity(0.9)
-                                      : Colors.blue.withOpacity(0.9),
-                                  borderRadius: BorderRadius.circular(20),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: Colors.black.withOpacity(0.3),
-                                      blurRadius: 4,
-                                      offset: Offset(0, 2),
-                                    ),
-                                  ],
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(
-                                      isLocal
-                                          ? Icons.download_done
-                                          : Icons.cloud,
-                                      color: Colors.white,
-                                      size: 16,
-                                    ),
-                                    SizedBox(width: 6),
-                                    Text(
-                                      isLocal
-                                          ? trans("Offline")
-                                          : trans("Streaming"),
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
+                  // Custom header overlay
+                  _buildVideoPlayerHeader(videoTitle, isLocal),
                 ],
               ),
             ),
@@ -1937,7 +1901,6 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
         },
       ).then((_) {
         // Pause the controller when dialog closes but don't dispose
-        // This allows for reactivation later
         _activeVideoController?.pause();
       }).catchError((error) {
         NyLogger.error('Error in video player dialog: $error');
@@ -1959,6 +1922,468 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
           ),
         );
       }
+    }
+  }
+
+  Future<String?> _validateAndProcessVideoUrl(String videoUrl) async {
+    try {
+      // First, validate the URL format
+      Uri uri = Uri.parse(videoUrl);
+      if (!uri.isAbsolute) {
+        NyLogger.error('Invalid video URL format: $videoUrl');
+        return null;
+      }
+
+      // Check if URL is accessible
+      final http.Client httpClient = http.Client();
+      try {
+        final response = await httpClient.head(
+          Uri.parse(videoUrl),
+          headers: {
+            'User-Agent':
+                'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+            'Accept': '*/*',
+            'Range': 'bytes=0-1',
+          },
+        ).timeout(Duration(seconds: 10));
+
+        httpClient.close();
+
+        // If we get 403, the URL might have expired signatures but could still be playable
+        if (response.statusCode == 403) {
+          NyLogger.info(
+              'Video URL returned 403, but attempting playback anyway (might be signed URL issue)');
+          return videoUrl; // Return the URL anyway - player might still work
+        }
+
+        // Check if the response indicates a valid video
+        if (response.statusCode == 200 || response.statusCode == 206) {
+          String? contentType = response.headers['content-type'];
+
+          // If no content type, assume it's valid (some servers don't set it properly)
+          if (contentType == null) {
+            NyLogger.info('No content type returned, assuming video is valid');
+            return videoUrl;
+          }
+
+          // Verify it's a video content type
+          if (contentType.startsWith('video/') ||
+              contentType.contains('application/octet-stream') ||
+              contentType.contains('binary/octet-stream')) {
+            return videoUrl; // URL is valid
+          } else {
+            NyLogger.info('Unexpected content type but allowing: $contentType');
+            return videoUrl; // Be lenient with content types
+          }
+        } else if (response.statusCode >= 400 && response.statusCode < 500) {
+          // Client errors - URL might be expired but let's try anyway
+          NyLogger.info(
+              'Video URL returned ${response.statusCode}, attempting playback anyway');
+          return videoUrl;
+        } else {
+          NyLogger.error('Video URL not accessible: ${response.statusCode}');
+          return null;
+        }
+      } catch (e) {
+        httpClient.close();
+        NyLogger.error('Error validating video URL: $e');
+        // If validation fails, return the URL anyway - let the player try
+        NyLogger.info(
+            'URL validation failed, but allowing player to attempt playback');
+        return videoUrl;
+      }
+    } catch (e) {
+      NyLogger.error('Error processing video URL: $e');
+      // If all else fails, return the URL and let the player handle it
+      return videoUrl;
+    }
+  }
+
+  Future<BetterPlayerController?>
+      _createIOSEnhancedVideoControllerWithValidation({
+    required String videoPath,
+    required String videoTitle,
+  }) async {
+    try {
+      // First validate the video URL
+      String? validatedUrl = await _validateAndProcessVideoUrl(videoPath);
+      if (validatedUrl == null) {
+        throw Exception('Video URL validation failed');
+      }
+
+      // Dispose any existing controller first
+      _activeVideoController?.dispose();
+      await Future.delayed(Duration(milliseconds: 100));
+
+      // Create iOS-optimized configuration
+      BetterPlayerConfiguration betterPlayerConfiguration =
+          BetterPlayerConfiguration(
+        aspectRatio: 16 / 9,
+        autoPlay: true,
+        looping: false,
+        fullScreenByDefault: true,
+        allowedScreenSleep: false,
+        autoDetectFullscreenDeviceOrientation: true,
+        autoDetectFullscreenAspectRatio: true,
+        handleLifecycle: true, // Important for iOS
+        deviceOrientationsOnFullScreen: [
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
+        ],
+        systemOverlaysAfterFullScreen: SystemUiOverlay.values,
+        deviceOrientationsAfterFullScreen: [DeviceOrientation.portraitUp],
+        controlsConfiguration: BetterPlayerControlsConfiguration(
+          enablePlayPause: true,
+          enableMute: true,
+          enableFullscreen: true,
+          enableSkips: true,
+          enableProgressText: true,
+          enableProgressBar: true,
+          enablePlaybackSpeed: false, // Disable on iOS for stability
+          enablePip: false,
+          enableRetry: true,
+          showControlsOnInitialize: true,
+          controlsHideTime: Duration(seconds: 3),
+          progressBarPlayedColor: Colors.amber,
+          progressBarHandleColor: Colors.amber,
+          progressBarBackgroundColor: Colors.white.withOpacity(0.3),
+          loadingColor: Colors.amber,
+          iconsColor: Colors.white,
+          backwardSkipTimeInMilliseconds: 10000,
+          forwardSkipTimeInMilliseconds: 10000,
+        ),
+        errorBuilder: (context, errorMessage) {
+          return _buildEnhancedErrorWidget(errorMessage, videoPath, videoTitle);
+        },
+      );
+
+      // Create iOS-optimized data source
+      BetterPlayerDataSource dataSource = BetterPlayerDataSource(
+        BetterPlayerDataSourceType.network,
+        validatedUrl,
+        bufferingConfiguration: BetterPlayerBufferingConfiguration(
+          minBufferMs: 15000, // 15 seconds
+          maxBufferMs: 50000, // 50 seconds
+          bufferForPlaybackMs: 2500, // 2.5 seconds
+          bufferForPlaybackAfterRebufferMs: 5000, // 5 seconds
+        ),
+        cacheConfiguration: BetterPlayerCacheConfiguration(
+          useCache: true,
+          preCacheSize: 5 * 1024 * 1024, // 5MB pre-cache
+          maxCacheSize: 100 * 1024 * 1024, // 100MB max cache
+          maxCacheFileSize: 50 * 1024 * 1024, // 50MB max file
+          key: "ios_cache_${validatedUrl.hashCode}",
+        ),
+        headers: {
+          'User-Agent':
+              'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+          'Accept': 'video/mp4,video/*,*/*',
+          'Accept-Encoding': 'identity',
+          'Connection': 'keep-alive',
+          'Cache-Control': 'no-cache',
+        },
+        placeholder: Container(
+          color: Colors.black,
+          child: Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  trans("Loading video..."),
+                  style: TextStyle(color: Colors.white, fontSize: 16),
+                ),
+                SizedBox(height: 8),
+                if (Platform.isIOS)
+                  Text(
+                    "Optimizing for iOS",
+                    style: TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      // Create the controller
+      _activeVideoController = BetterPlayerController(
+        betterPlayerConfiguration,
+        betterPlayerDataSource: dataSource,
+      );
+
+      // Add listener for better error handling
+      _activeVideoController!.addEventsListener((BetterPlayerEvent event) {
+        if (event.betterPlayerEventType == BetterPlayerEventType.exception) {
+          NyLogger.error('BetterPlayer exception: ${event.parameters}');
+        }
+      });
+
+      return _activeVideoController;
+    } catch (e) {
+      NyLogger.error('Error creating iOS enhanced video controller: $e');
+      _activeVideoController?.dispose();
+      _activeVideoController = null;
+      return null;
+    }
+  }
+
+  Widget _buildEnhancedErrorWidget(
+      String? errorMessage, String videoPath, String videoTitle) {
+    return Container(
+      color: Colors.black,
+      child: Center(
+        child: Padding(
+          padding: EdgeInsets.all(20),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.error_outline, color: Colors.red, size: 64),
+              SizedBox(height: 16),
+              Text(
+                trans("Video Playback Error"),
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              SizedBox(height: 8),
+              Text(
+                errorMessage ?? trans("Unable to play this video"),
+                style: TextStyle(color: Colors.white70, fontSize: 14),
+                textAlign: TextAlign.center,
+              ),
+              if (Platform.isIOS) ...[
+                SizedBox(height: 8),
+                Text(
+                  trans("This may be due to iOS video format restrictions"),
+                  style: TextStyle(color: Colors.white60, fontSize: 12),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+              SizedBox(height: 24),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  ElevatedButton(
+                    onPressed: () {
+                      // Try alternative playback method
+                      _tryAlternativePlayback(videoPath, videoTitle);
+                    },
+                    style:
+                        ElevatedButton.styleFrom(backgroundColor: Colors.amber),
+                    child: Text(trans("Try Again")),
+                  ),
+                  ElevatedButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    style:
+                        ElevatedButton.styleFrom(backgroundColor: Colors.grey),
+                    child: Text(trans("Close")),
+                  ),
+                ],
+              ),
+              SizedBox(height: 16),
+              TextButton(
+                onPressed: () {
+                  // Suggest downloading for offline viewing
+                  Navigator.of(context).pop();
+                  _suggestDownloadForOfflineViewing(videoPath, videoTitle);
+                },
+                child: Text(
+                  trans("Download for offline viewing instead"),
+                  style: TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _tryAlternativePlayback(
+      String videoPath, String videoTitle) async {
+    try {
+      // Close current error dialog
+      Navigator.of(context).pop();
+
+      // Show loading
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(color: Colors.amber),
+              SizedBox(height: 16),
+              Text(
+                trans("Trying alternative playback method..."),
+                style: TextStyle(color: Colors.white),
+              ),
+            ],
+          ),
+        ),
+      );
+
+      // Wait a moment
+      await Future.delayed(Duration(seconds: 1));
+
+      // Dispose current controller
+      _disposeActiveVideoController();
+
+      // Try with simplified configuration
+      BetterPlayerConfiguration simpleConfig = BetterPlayerConfiguration(
+        aspectRatio: 16 / 9,
+        autoPlay: true,
+        looping: false,
+        fullScreenByDefault: false, // Start in normal mode
+        allowedScreenSleep: false,
+        handleLifecycle: true,
+        controlsConfiguration: BetterPlayerControlsConfiguration(
+          enablePlayPause: true,
+          enableMute: true,
+          enableFullscreen: true,
+          enableSkips: false, // Disable skips for stability
+          enableProgressText:
+              false, // Disable progress text to avoid NaN issues
+          enableProgressBar: false, // Disable progress bar to avoid NaN issues
+          enablePlaybackSpeed: false,
+          enablePip: false,
+          enableRetry: false,
+          showControlsOnInitialize: true,
+          controlsHideTime: Duration(seconds: 5),
+          loadingColor: Colors.transparent, // Remove loading indicator
+          iconsColor: Colors.white,
+        ),
+      );
+
+      BetterPlayerDataSource simpleDataSource = BetterPlayerDataSource(
+        BetterPlayerDataSourceType.network,
+        videoPath,
+        bufferingConfiguration: BetterPlayerBufferingConfiguration(
+          minBufferMs: 5000,
+          maxBufferMs: 20000,
+          bufferForPlaybackMs: 1000,
+          bufferForPlaybackAfterRebufferMs: 2000,
+        ),
+        headers: {
+          'User-Agent':
+              'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15',
+          'Accept': '*/*',
+        },
+      );
+
+      _activeVideoController = BetterPlayerController(
+        simpleConfig,
+        betterPlayerDataSource: simpleDataSource,
+      );
+
+      // Close loading dialog
+      Navigator.of(context).pop();
+
+      // Show video player
+      await _showSimpleVideoPlayer(videoTitle);
+    } catch (e) {
+      // Close loading dialog if still open
+      if (Navigator.of(context).canPop()) {
+        Navigator.of(context).pop();
+      }
+
+      NyLogger.error('Alternative playback also failed: $e');
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(trans("Alternative playback method also failed")),
+          backgroundColor: Colors.red,
+          duration: Duration(seconds: 3),
+        ),
+      );
+    }
+  }
+
+  // Simple video player dialog
+  Future<void> _showSimpleVideoPlayer(String videoTitle) async {
+    if (_activeVideoController == null) return;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      useSafeArea: false,
+      builder: (BuildContext context) {
+        return WillPopScope(
+          onWillPop: () async {
+            _pauseActiveVideoSafely();
+            return true;
+          },
+          child: Scaffold(
+            backgroundColor: Colors.black,
+            appBar: AppBar(
+              backgroundColor: Colors.black.withOpacity(0.7),
+              title: Text(
+                videoTitle,
+                style: TextStyle(color: Colors.white, fontSize: 16),
+              ),
+              leading: IconButton(
+                icon: Icon(Icons.close, color: Colors.white),
+                onPressed: () => Navigator.of(context).pop(),
+              ),
+              elevation: 0,
+            ),
+            body: Center(
+              child: BetterPlayer(controller: _activeVideoController!),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  // Suggest download for offline viewing
+  void _suggestDownloadForOfflineViewing(String videoPath, String videoTitle) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(trans("Download Suggestion")),
+        content: Text(trans(
+            "This video may have playback issues when streaming. Would you like to download it for offline viewing? Downloaded videos usually play more reliably.")),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(trans("Maybe Later")),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              // Find the video index and trigger download
+              for (int i = 0; i < curriculumItems.length; i++) {
+                if (curriculumItems[i]['video_url'] == videoPath) {
+                  _downloadVideo(i);
+                  break;
+                }
+              }
+            },
+            style: TextButton.styleFrom(foregroundColor: Colors.amber),
+            child: Text(trans("Download Now")),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<bool> _isVideoUrlAccessible(String videoUrl) async {
+    try {
+      final response = await http.head(
+        Uri.parse(videoUrl),
+        headers: {
+          'User-Agent':
+              'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+        },
+      ).timeout(Duration(seconds: 5));
+
+      return response.statusCode == 200 || response.statusCode == 206;
+    } catch (e) {
+      NyLogger.error('Video URL accessibility check failed: $e');
+      return false;
     }
   }
 
@@ -1994,164 +2419,70 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
     required String videoTitle,
     required bool isLocal,
   }) async {
-    // For iOS network videos, use enhanced configuration
+    // For local files, use existing logic
+    if (isLocal) {
+      return await _createAndInitializeController(
+        videoPath: videoPath,
+        videoTitle: videoTitle,
+        isLocal: isLocal,
+      );
+    }
+
+    // For network videos, try different approaches for iOS
     if (Platform.isIOS && !isLocal) {
-      return await _createIOSEnhancedVideoController(
+      // Try iOS alternative controller first (most compatible)
+      try {
+        NyLogger.info('Trying iOS alternative controller first');
+        BetterPlayerController? alternativeController =
+            await _createIOSAlternativeVideoController(
+          videoPath: videoPath,
+          videoTitle: videoTitle,
+        );
+
+        if (alternativeController != null) {
+          return alternativeController;
+        }
+      } catch (e) {
+        NyLogger.error('iOS alternative controller failed: $e');
+      }
+
+      // If alternative fails, try enhanced controller
+      try {
+        NyLogger.info('Trying enhanced controller for iOS');
+        BetterPlayerController? enhancedController =
+            await _createIOSEnhancedVideoControllerWithValidation(
+          videoPath: videoPath,
+          videoTitle: videoTitle,
+        );
+
+        if (enhancedController != null) {
+          return enhancedController;
+        }
+      } catch (e) {
+        NyLogger.error('Enhanced controller failed: $e');
+      }
+
+      // If enhanced controller fails, try fallback
+      NyLogger.info('Trying fallback controller for iOS');
+      return await _createFallbackVideoController(
         videoPath: videoPath,
         videoTitle: videoTitle,
       );
     }
+
+    // For Android, use existing logic but with fallback
     try {
-      // Dispose any existing controller first
-      _activeVideoController?.dispose();
-
-      // Create the configuration
-      BetterPlayerConfiguration betterPlayerConfiguration =
-          BetterPlayerConfiguration(
-        aspectRatio: 16 / 9,
-        autoPlay: true,
-        looping: false,
-        fullScreenByDefault: true,
-        allowedScreenSleep: false,
-        autoDetectFullscreenDeviceOrientation: true,
-        autoDetectFullscreenAspectRatio: true,
-        deviceOrientationsOnFullScreen: [
-          DeviceOrientation.landscapeLeft,
-          DeviceOrientation.landscapeRight,
-        ],
-        systemOverlaysAfterFullScreen: SystemUiOverlay.values,
-        deviceOrientationsAfterFullScreen: [DeviceOrientation.portraitUp],
-        controlsConfiguration: BetterPlayerControlsConfiguration(
-          enablePlayPause: true,
-          enableMute: true,
-          enableFullscreen: true,
-          enableSkips: true,
-          enableProgressText: true,
-          enableProgressBar: true,
-          enablePlaybackSpeed: true,
-          enablePip: false,
-          enableRetry: true,
-          showControlsOnInitialize: true,
-          controlsHideTime: Duration(seconds: 3),
-          progressBarPlayedColor: Colors.amber,
-          progressBarHandleColor: Colors.amber,
-          progressBarBackgroundColor: Colors.white.withOpacity(0.3),
-          loadingColor: Colors.amber,
-          iconsColor: Colors.white,
-          backwardSkipTimeInMilliseconds: 10000,
-          forwardSkipTimeInMilliseconds: 10000,
-        ),
-        errorBuilder: (context, errorMessage) {
-          return _buildErrorWidget(
-              errorMessage, videoPath, videoTitle, isLocal);
-        },
+      return await _createAndInitializeController(
+        videoPath: videoPath,
+        videoTitle: videoTitle,
+        isLocal: isLocal,
       );
-
-      // Create data source
-      BetterPlayerDataSource dataSource;
-      if (isLocal) {
-        dataSource = BetterPlayerDataSource(
-          BetterPlayerDataSourceType.file,
-          videoPath,
-          bufferingConfiguration: BetterPlayerBufferingConfiguration(
-            minBufferMs: 5000,
-            maxBufferMs: 30000,
-            bufferForPlaybackMs: 2500,
-            bufferForPlaybackAfterRebufferMs: 5000,
-          ),
-          placeholder: Container(
-            color: Colors.black,
-            child: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  CircularProgressIndicator(color: Colors.amber),
-                  SizedBox(height: 16),
-                  Text(
-                    trans("Loading downloaded video..."),
-                    style: TextStyle(color: Colors.white),
-                  ),
-                  SizedBox(height: 8),
-                  Container(
-                    padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.green.withOpacity(0.8),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.download_done,
-                            color: Colors.white, size: 16),
-                        SizedBox(width: 4),
-                        Text(
-                          trans("Offline"),
-                          style: TextStyle(color: Colors.white, fontSize: 12),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      } else {
-        dataSource = BetterPlayerDataSource(
-          BetterPlayerDataSourceType.network,
-          videoPath,
-          bufferingConfiguration: BetterPlayerBufferingConfiguration(
-            minBufferMs: 3000,
-            maxBufferMs: 15000,
-            bufferForPlaybackMs: 1500,
-            bufferForPlaybackAfterRebufferMs: 3000,
-          ),
-          cacheConfiguration: BetterPlayerCacheConfiguration(
-            useCache: true,
-            preCacheSize: 1 * 1024 * 1024,
-            maxCacheSize: 200 * 1024 * 1024 * 1024,
-            maxCacheFileSize: 100 * 1024 * 1024 * 1024,
-            key: "cache_${videoPath.hashCode}",
-          ),
-          headers: {
-            'User-Agent':
-                'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15',
-            'Accept': '*/*',
-            'Accept-Encoding': 'identity',
-            'Range': 'bytes=0-',
-            'Connection': 'keep-alive',
-          },
-          placeholder: Container(
-            color: Colors.black,
-            child: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  CircularProgressIndicator(color: Colors.amber),
-                  SizedBox(height: 16),
-                  Text(
-                    trans("Loading video..."),
-                    style: TextStyle(color: Colors.white),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      }
-
-      // Create and return the controller
-      _activeVideoController = BetterPlayerController(
-        betterPlayerConfiguration,
-        betterPlayerDataSource: dataSource,
-      );
-
-      return _activeVideoController;
     } catch (e) {
-      NyLogger.error('Error creating active video controller: $e');
-      _activeVideoController?.dispose();
-      _activeVideoController = null;
-      return null;
+      NyLogger.error('Standard controller failed, trying fallback: $e');
+      return await _createFallbackVideoController(
+        videoPath: videoPath,
+        videoTitle: videoTitle,
+      );
     }
   }
 
@@ -3242,214 +3573,91 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
     );
   }
 
-  // iOS-specific enhanced video controller for better compatibility
-  Future<BetterPlayerController?> _createIOSEnhancedVideoController({
-    required String videoPath,
-    required String videoTitle,
-  }) async {
-    // Try enhanced configuration first, then fallback to standard
-    try {
-      return await _createIOSEnhancedVideoControllerInternal(
-        videoPath: videoPath,
-        videoTitle: videoTitle,
-      );
-    } catch (e) {
-      NyLogger.error('Enhanced iOS controller failed, trying standard: $e');
-      // Fallback to standard controller (skip iOS check to avoid recursion)
-      try {
-        // Dispose any existing controller first
-        _activeVideoController?.dispose();
-
-        // Create the configuration
-        BetterPlayerConfiguration betterPlayerConfiguration =
-            BetterPlayerConfiguration(
-          aspectRatio: 16 / 9,
-          autoPlay: true,
-          looping: false,
-          fullScreenByDefault: true,
-          allowedScreenSleep: false,
-          autoDetectFullscreenDeviceOrientation: true,
-          autoDetectFullscreenAspectRatio: true,
-          deviceOrientationsOnFullScreen: [
-            DeviceOrientation.landscapeLeft,
-            DeviceOrientation.landscapeRight,
-          ],
-          systemOverlaysAfterFullScreen: SystemUiOverlay.values,
-          deviceOrientationsAfterFullScreen: [DeviceOrientation.portraitUp],
-          controlsConfiguration: BetterPlayerControlsConfiguration(
-            enablePlayPause: true,
-            enableMute: true,
-            enableFullscreen: true,
-            enableSkips: true,
-            enableProgressText: true,
-            enableProgressBar: true,
-            enablePlaybackSpeed: true,
-            enablePip: false,
-            enableRetry: true,
-            showControlsOnInitialize: true,
-            controlsHideTime: Duration(seconds: 3),
-            progressBarPlayedColor: Colors.amber,
-            progressBarHandleColor: Colors.amber,
-            progressBarBackgroundColor: Colors.white.withOpacity(0.3),
-            loadingColor: Colors.amber,
-            iconsColor: Colors.white,
-            backwardSkipTimeInMilliseconds: 10000,
-            forwardSkipTimeInMilliseconds: 10000,
-          ),
-          errorBuilder: (context, errorMessage) {
-            return _buildErrorWidget(
-                errorMessage, videoPath, videoTitle, false);
-          },
-        );
-
-        // Create standard data source
-        BetterPlayerDataSource dataSource = BetterPlayerDataSource(
-          BetterPlayerDataSourceType.network,
-          videoPath,
-          bufferingConfiguration: BetterPlayerBufferingConfiguration(
-            minBufferMs: 3000,
-            maxBufferMs: 15000,
-            bufferForPlaybackMs: 1500,
-            bufferForPlaybackAfterRebufferMs: 3000,
-          ),
-          cacheConfiguration: BetterPlayerCacheConfiguration(
-            useCache: true,
-            preCacheSize: 1 * 1024 * 1024,
-            maxCacheSize: 200 * 1024 * 1024 * 1024,
-            maxCacheFileSize: 100 * 1024 * 1024 * 1024,
-            key: "cache_${videoPath.hashCode}",
-          ),
-          headers: {
-            'User-Agent':
-                'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15',
-            'Accept': '*/*',
-            'Accept-Encoding': 'identity',
-            'Range': 'bytes=0-',
-            'Connection': 'keep-alive',
-          },
-          placeholder: Container(
-            color: Colors.black,
-            child: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  CircularProgressIndicator(color: Colors.amber),
-                  SizedBox(height: 16),
-                  Text(
-                    trans("Loading video..."),
-                    style: TextStyle(color: Colors.white),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-
-        // Create and return the controller
-        _activeVideoController = BetterPlayerController(
-          betterPlayerConfiguration,
-          betterPlayerDataSource: dataSource,
-        );
-
-        return _activeVideoController;
-      } catch (e) {
-        NyLogger.error('Error creating fallback video controller: $e');
-        return null;
-      }
-    }
-  }
-
-  // Internal iOS enhanced video controller
-  Future<BetterPlayerController?> _createIOSEnhancedVideoControllerInternal({
+  // Alternative video player for iOS with timeout handling
+  Future<BetterPlayerController?> _createIOSAlternativeVideoController({
     required String videoPath,
     required String videoTitle,
   }) async {
     try {
+      NyLogger.info(
+          'Creating iOS alternative video controller with minimal configuration');
+
       // Dispose any existing controller first
       _activeVideoController?.dispose();
+      await Future.delayed(Duration(milliseconds: 100));
 
-      // Create iOS-specific configuration
-      BetterPlayerConfiguration betterPlayerConfiguration =
-          BetterPlayerConfiguration(
+      // Create ultra-minimal configuration for iOS
+      BetterPlayerConfiguration minimalConfig = BetterPlayerConfiguration(
         aspectRatio: 16 / 9,
-        autoPlay: true,
+        autoPlay: false, // Don't auto-play to avoid immediate timeout
         looping: false,
-        fullScreenByDefault: true,
+        fullScreenByDefault: false, // Start in normal mode
         allowedScreenSleep: false,
-        autoDetectFullscreenDeviceOrientation: true,
-        autoDetectFullscreenAspectRatio: true,
-        deviceOrientationsOnFullScreen: [
-          DeviceOrientation.landscapeLeft,
-          DeviceOrientation.landscapeRight,
-        ],
-        systemOverlaysAfterFullScreen: SystemUiOverlay.values,
-        deviceOrientationsAfterFullScreen: [DeviceOrientation.portraitUp],
+        handleLifecycle: true,
         controlsConfiguration: BetterPlayerControlsConfiguration(
           enablePlayPause: true,
           enableMute: true,
           enableFullscreen: true,
-          enableSkips: true,
-          enableProgressText: true,
-          enableProgressBar: true,
-          enablePlaybackSpeed: true,
+          enableSkips: false,
+          enableProgressText:
+              false, // Disable progress text to avoid NaN issues
+          enableProgressBar: false, // Disable progress bar to avoid NaN issues
+          enablePlaybackSpeed: false,
           enablePip: false,
           enableRetry: true,
           showControlsOnInitialize: true,
-          controlsHideTime: Duration(seconds: 3),
-          progressBarPlayedColor: Colors.amber,
-          progressBarHandleColor: Colors.amber,
-          progressBarBackgroundColor: Colors.white.withOpacity(0.3),
-          loadingColor: Colors.amber,
+          controlsHideTime: Duration(seconds: 5),
+          loadingColor: Colors.transparent, // Remove loading indicator
           iconsColor: Colors.white,
-          backwardSkipTimeInMilliseconds: 10000,
-          forwardSkipTimeInMilliseconds: 10000,
         ),
         errorBuilder: (context, errorMessage) {
-          return _buildErrorWidget(errorMessage, videoPath, videoTitle, false);
+          return _buildIOSAlternativeErrorWidget(
+              errorMessage, videoPath, videoTitle);
         },
       );
 
-      // Create iOS-specific data source with enhanced buffering
-      // Use original URL without modification to preserve AWS S3 signature
-      BetterPlayerDataSource dataSource = BetterPlayerDataSource(
+      // Create minimal data source
+      BetterPlayerDataSource minimalDataSource = BetterPlayerDataSource(
         BetterPlayerDataSourceType.network,
-        videoPath, // Use original URL without transformation
+        videoPath,
         bufferingConfiguration: BetterPlayerBufferingConfiguration(
-          minBufferMs: 300000, // 5 minutes for iOS
-          maxBufferMs: 1200000, // 20 minutes for iOS
-          bufferForPlaybackMs: 120000, // 2 minutes for iOS
-          bufferForPlaybackAfterRebufferMs: 300000, // 5 minutes for iOS
+          minBufferMs: 1000, // Very small buffer
+          maxBufferMs: 5000, // Small max buffer
+          bufferForPlaybackMs: 500,
+          bufferForPlaybackAfterRebufferMs: 1000,
         ),
+        // No cache to avoid issues
         cacheConfiguration: BetterPlayerCacheConfiguration(
-          useCache: true,
-          preCacheSize: 10 * 1024 * 1024, // 10MB pre-cache for iOS
-          maxCacheSize: 200 * 1024 * 1024 * 1024,
-          maxCacheFileSize: 100 * 1024 * 1024 * 1024,
-          key: "ios_enhanced_cache_${videoPath.hashCode}",
+          useCache: false,
         ),
+        // Minimal headers
         headers: {
           'User-Agent':
-              'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-          'Accept': '*/*',
-          'Accept-Encoding': 'identity',
-          'Range': 'bytes=0-',
-          'Connection': 'keep-alive',
+              'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15',
         },
+        // Custom placeholder showing loading state
         placeholder: Container(
           color: Colors.black,
           child: Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                CircularProgressIndicator(color: Colors.amber),
+                SizedBox(
+                  width: 40,
+                  height: 40,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 3,
+                    valueColor: AlwaysStoppedAnimation<Color>(Colors.amber),
+                  ),
+                ),
                 SizedBox(height: 16),
                 Text(
                   trans("Loading video..."),
-                  style: TextStyle(color: Colors.white),
+                  style: TextStyle(color: Colors.white, fontSize: 16),
                 ),
                 SizedBox(height: 8),
                 Text(
-                  "iOS Enhanced Loading",
+                  "iOS Alternative Mode",
                   style: TextStyle(color: Colors.white70, fontSize: 12),
                 ),
               ],
@@ -3458,18 +3666,235 @@ class _CourseCurriculumPageState extends NyState<CourseCurriculumPage>
         ),
       );
 
-      // Create and return the controller
+      // Create the controller
       _activeVideoController = BetterPlayerController(
-        betterPlayerConfiguration,
-        betterPlayerDataSource: dataSource,
+        minimalConfig,
+        betterPlayerDataSource: minimalDataSource,
       );
+
+      // Add timeout listener
+      _activeVideoController!.addEventsListener((BetterPlayerEvent event) {
+        if (event.betterPlayerEventType == BetterPlayerEventType.exception) {
+          String errorMessage =
+              event.parameters?['exception']?.toString() ?? 'Unknown error';
+          if (errorMessage.contains('timeout') ||
+              errorMessage.contains('timed out')) {
+            NyLogger.error('iOS video timeout detected: $errorMessage');
+            // Don't dispose here, let the error widget handle it
+          }
+        }
+      });
 
       return _activeVideoController;
     } catch (e) {
-      NyLogger.error('Error creating iOS enhanced video controller: $e');
+      NyLogger.error('Error creating iOS alternative video controller: $e');
       _activeVideoController?.dispose();
       _activeVideoController = null;
       return null;
     }
+  }
+
+  // Error widget for iOS alternative player
+  Widget _buildIOSAlternativeErrorWidget(
+      String? errorMessage, String videoPath, String videoTitle) {
+    return Container(
+      color: Colors.black,
+      child: Center(
+        child: Padding(
+          padding: EdgeInsets.all(20),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.error_outline, color: Colors.red, size: 64),
+              SizedBox(height: 16),
+              Text(
+                trans("iOS Video Loading Issue"),
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              SizedBox(height: 8),
+              Text(
+                trans("This video may not be compatible with iOS streaming"),
+                style: TextStyle(color: Colors.white70, fontSize: 14),
+                textAlign: TextAlign.center,
+              ),
+              SizedBox(height: 8),
+              Text(
+                errorMessage ?? trans("Loading failed"),
+                style: TextStyle(color: Colors.white60, fontSize: 12),
+                textAlign: TextAlign.center,
+              ),
+              SizedBox(height: 24),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  _suggestDownloadForOfflineViewing(videoPath, videoTitle);
+                },
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.amber),
+                child: Text(trans("Download Instead")),
+              ),
+              SizedBox(height: 12),
+              ElevatedButton(
+                onPressed: () => Navigator.of(context).pop(),
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.grey),
+                child: Text(trans("Close")),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Fallback video controller for handling 403 errors and expired URLs
+  Future<BetterPlayerController?> _createFallbackVideoController({
+    required String videoPath,
+    required String videoTitle,
+  }) async {
+    try {
+      NyLogger.info(
+          'Creating fallback video controller for potentially expired URL');
+
+      // Dispose any existing controller first
+      _activeVideoController?.dispose();
+      await Future.delayed(Duration(milliseconds: 100));
+
+      // Create very basic configuration for maximum compatibility
+      BetterPlayerConfiguration fallbackConfig = BetterPlayerConfiguration(
+        aspectRatio: 16 / 9,
+        autoPlay: true,
+        looping: false,
+        fullScreenByDefault: true,
+        allowedScreenSleep: false,
+        handleLifecycle: true,
+        controlsConfiguration: BetterPlayerControlsConfiguration(
+          enablePlayPause: true,
+          enableMute: true,
+          enableFullscreen: true,
+          enableSkips: false,
+          enableProgressText:
+              false, // Disable progress text to avoid NaN issues
+          enableProgressBar: false, // Disable progress bar to avoid NaN issues
+          enablePlaybackSpeed: false,
+          enablePip: false,
+          enableRetry: true,
+          showControlsOnInitialize: true,
+          controlsHideTime: Duration(seconds: 5),
+          loadingColor: Colors.transparent, // Remove loading indicator
+          iconsColor: Colors.white,
+        ),
+        errorBuilder: (context, errorMessage) {
+          return _buildFallbackErrorWidget(errorMessage, videoPath, videoTitle);
+        },
+      );
+
+      // Create data source with minimal configuration
+      BetterPlayerDataSource fallbackDataSource = BetterPlayerDataSource(
+        BetterPlayerDataSourceType.network,
+        videoPath,
+        bufferingConfiguration: BetterPlayerBufferingConfiguration(
+          minBufferMs: 2000,
+          maxBufferMs: 10000,
+          bufferForPlaybackMs: 500,
+          bufferForPlaybackAfterRebufferMs: 1000,
+        ),
+        // Minimal headers to avoid authentication issues
+        headers: {
+          'User-Agent':
+              'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15',
+        },
+        placeholder: Container(
+          color: Colors.black,
+          child: Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  trans("Loading video..."),
+                  style: TextStyle(color: Colors.white, fontSize: 16),
+                ),
+                SizedBox(height: 8),
+                Text(
+                  "Fallback mode",
+                  style: TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      // Create the controller
+      _activeVideoController = BetterPlayerController(
+        fallbackConfig,
+        betterPlayerDataSource: fallbackDataSource,
+      );
+
+      return _activeVideoController;
+    } catch (e) {
+      NyLogger.error('Error creating fallback video controller: $e');
+      _activeVideoController?.dispose();
+      _activeVideoController = null;
+      return null;
+    }
+  }
+
+  // Error widget for fallback scenarios
+  Widget _buildFallbackErrorWidget(
+      String? errorMessage, String videoPath, String videoTitle) {
+    return Container(
+      color: Colors.black,
+      child: Center(
+        child: Padding(
+          padding: EdgeInsets.all(20),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.error_outline, color: Colors.red, size: 64),
+              SizedBox(height: 16),
+              Text(
+                trans("Video Access Error"),
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              SizedBox(height: 8),
+              Text(
+                trans(
+                    "The video URL may have expired or requires authentication"),
+                style: TextStyle(color: Colors.white70, fontSize: 14),
+                textAlign: TextAlign.center,
+              ),
+              SizedBox(height: 8),
+              Text(
+                errorMessage ?? trans("Unable to access this video"),
+                style: TextStyle(color: Colors.white60, fontSize: 12),
+                textAlign: TextAlign.center,
+              ),
+              SizedBox(height: 24),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  _suggestDownloadForOfflineViewing(videoPath, videoTitle);
+                },
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.amber),
+                child: Text(trans("Download Instead")),
+              ),
+              SizedBox(height: 12),
+              ElevatedButton(
+                onPressed: () => Navigator.of(context).pop(),
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.grey),
+                child: Text(trans("Close")),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
