@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_app/resources/pages/base_navigation_hub.dart';
@@ -141,63 +142,66 @@ class _SigninPageState extends NyPage<SigninPage> {
 
                 const SizedBox(height: 16),
 
-                // Or divider
-                Row(
-                  children: [
-                    Expanded(child: Divider(color: Colors.grey[300])),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: Text(
-                        'OR'.tr(),
-                        style: TextStyle(
-                          color: Colors.grey[400],
-                          fontSize: 12,
+                // Only show Google authentication on non-iOS platforms
+                if (!Platform.isIOS) ...[
+                  // Or divider
+                  Row(
+                    children: [
+                      Expanded(child: Divider(color: Colors.grey[300])),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: Text(
+                          'OR'.tr(),
+                          style: TextStyle(
+                            color: Colors.grey[400],
+                            fontSize: 12,
+                          ),
                         ),
                       ),
-                    ),
-                    Expanded(child: Divider(color: Colors.grey[300])),
-                  ],
-                ),
+                      Expanded(child: Divider(color: Colors.grey[300])),
+                    ],
+                  ),
 
-                const SizedBox(height: 16),
+                  const SizedBox(height: 16),
 
-                // Google Button
-                afterNotLocked(
-                  'google_signin',
-                  child: () => _buildGoogleButton(),
-                  loading: Container(
-                    height: 48,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(28),
-                      border: Border.all(color: Colors.grey[300]!),
-                      color: Colors.grey[
-                          50], // Slightly different background when loading
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation<Color>(
-                                Colors.grey[600]!),
+                  // Google Button
+                  afterNotLocked(
+                    'google_signin',
+                    child: () => _buildGoogleButton(),
+                    loading: Container(
+                      height: 48,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(28),
+                        border: Border.all(color: Colors.grey[300]!),
+                        color: Colors.grey[
+                            50], // Slightly different background when loading
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                  Colors.grey[600]!),
+                            ),
                           ),
-                        ),
-                        SizedBox(width: 12),
-                        Text(
-                          'Signing in with Google...'.tr(),
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w500,
-                            color: Colors.grey[600],
+                          SizedBox(width: 12),
+                          Text(
+                            'Signing in with Google...'.tr(),
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w500,
+                              color: Colors.grey[600],
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
-                ),
+                ],
 
                 const SizedBox(height: 30),
                 // Don't have account

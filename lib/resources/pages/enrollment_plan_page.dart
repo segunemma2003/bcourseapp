@@ -1,16 +1,20 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_app/app/services/video_service.dart';
+import 'package:flutter_app/app/services/platform_payment_service.dart';
 import 'package:flutter_app/resources/pages/base_navigation_hub.dart';
 import 'package:flutter_app/resources/pages/course_curriculum_page.dart';
 import 'package:flutter_app/resources/pages/course_detail_page.dart';
 import 'package:nylo_framework/nylo_framework.dart';
 import 'package:razorpay_flutter/razorpay_flutter.dart';
+import 'package:in_app_purchase/in_app_purchase.dart';
 
 import '../../app/models/course.dart';
 import '../../app/models/enrollment.dart';
 import '../../app/networking/course_api_service.dart';
+import '../../app/networking/payment_link_api_service.dart';
 import 'package:uuid/uuid.dart';
 
 class EnrollmentPlanPage extends NyStatefulWidget {
@@ -28,7 +32,8 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
   VideoService _videoService = VideoService();
   bool isRenewal = false;
 
-  late Razorpay _razorpay;
+  // Platform payment service
+  late PlatformPaymentService _paymentService;
   List<dynamic> curriculumItems = [];
   String? username;
   String? email;
@@ -57,12 +62,34 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
     super.initState();
 
     try {
-      _razorpay = Razorpay();
-      _razorpay.on(Razorpay.EVENT_PAYMENT_SUCCESS, _handlePaymentSuccess);
-      _razorpay.on(Razorpay.EVENT_PAYMENT_ERROR, _handlePaymentError);
-      _razorpay.on(Razorpay.EVENT_EXTERNAL_WALLET, _handleExternalWallet);
+      _paymentService = PlatformPaymentService();
+      _initializePaymentService();
     } catch (e) {
-      NyLogger.error('Error initializing Razorpay: $e');
+      NyLogger.error('Error initializing payment service: $e');
+    }
+  }
+
+  Future<void> _initializePaymentService() async {
+    try {
+      await _paymentService.initialize(
+        onPaymentSuccess: _handlePaymentSuccess,
+        onPaymentError: _handlePaymentError,
+        onExternalWallet: _handleExternalWallet,
+        onInAppPurchaseSuccess: _handleInAppPurchaseSuccess,
+        onInAppPurchaseError: _handleInAppPurchaseError,
+        onPaymentLinkSuccess: _handlePaymentLinkSuccess,
+        onPaymentLinkError: _handlePaymentLinkError,
+      );
+
+      // Start listening to in-app purchase updates (only for non-iOS platforms)
+      if (!Platform.isIOS) {
+        _paymentService.listenToInAppPurchaseUpdates();
+      }
+
+      NyLogger.info(
+          '✅ Payment service initialized: ${_paymentService.platformName}');
+    } catch (e) {
+      NyLogger.error('❌ Error initializing payment service: $e');
     }
   }
 
@@ -70,9 +97,9 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
   void dispose() {
     try {
       _paymentTimeoutTimer?.cancel();
-      _razorpay.clear();
+      _paymentService.dispose();
     } catch (e) {
-      NyLogger.error('Error disposing Razorpay: $e');
+      NyLogger.error('Error disposing payment service: $e');
     }
     super.dispose();
   }
@@ -487,24 +514,6 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
       return;
     }
 
-    setState(() {
-      _isCreatingOrder = true;
-      _isProcessingPayment = false;
-      _isVerifyingPayment = false;
-      _isCompletingEnrollment = false;
-      _currentLoadingMessage = "Creating payment order...";
-      _paymentStartTime = DateTime.now();
-    });
-    // Set up timeout timer
-    _paymentTimeoutTimer = Timer(Duration(minutes: 3), () {
-      // Extended timeout
-      if (_isAnyProcessActive && mounted) {
-        _resetAllLoadingStates();
-        showToastDanger(
-            description: "Payment process timed out. Please try again.");
-      }
-    });
-
     SubscriptionPlan plan = subscriptionPlans[selectedPlanIndex];
 
     // Validate inputs before proceeding
@@ -513,98 +522,156 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
       return;
     }
 
-    try {
-      // ✅ STEP 1: Create order with backend first
-      NyLogger.info('🔄 Creating payment order...');
-      showLoadingDialog(trans("Creating payment order..."));
+    // For iOS, use payment link API for order creation only
+    if (Platform.isIOS) {
+      try {
+        showLoadingDialog(trans("Creating order..."));
 
-      final courseApiService = CourseApiService();
-      _currentOrderDetails = await courseApiService.createPaymentOrder(
-        courseId: course!.id,
-        planType: plan.planType,
-        paymentCardId: null, // Add payment card support if needed
-      );
+        // Create payment link (order creation)
+        await _startPlatformPayment(plan);
 
-      // Hide loading dialog
-      if (mounted && Navigator.canPop(context)) {
-        Navigator.pop(context);
+        // Hide loading dialog
+        if (mounted && Navigator.canPop(context)) {
+          Navigator.pop(context);
+        }
+      } catch (e) {
+        // Hide loading dialog if still showing
+        if (mounted && Navigator.canPop(context)) {
+          Navigator.pop(context);
+        }
+
+        NyLogger.error('❌ Order creation failed: $e');
+
+        String errorMessage = "Failed to create order";
+        if (e.toString().contains('already enrolled') ||
+            e.toString().contains('already have')) {
+          errorMessage = "You are already enrolled in this course";
+        } else if (e.toString().contains('Invalid plan')) {
+          errorMessage = "Invalid subscription plan selected";
+        } else if (e.toString().contains('not found')) {
+          errorMessage = "Course not found. Please try again.";
+        }
+
+        showToastDanger(description: errorMessage);
       }
+    } else {
+      // For Android/other platforms, use the existing Razorpay flow
+      setState(() {
+        _isCreatingOrder = true;
+        _isProcessingPayment = false;
+        _isVerifyingPayment = false;
+        _isCompletingEnrollment = false;
+        _currentLoadingMessage = "Creating payment order...";
+        _paymentStartTime = DateTime.now();
+      });
 
-      _currentOrderId = _currentOrderDetails!['order_id'];
-      NyLogger.info('✅ Order created successfully: $_currentOrderId');
+      // Set up timeout timer
+      _paymentTimeoutTimer = Timer(Duration(minutes: 3), () {
+        if (_isAnyProcessActive && mounted) {
+          _resetAllLoadingStates();
+          showToastDanger(
+              description: "Payment process timed out. Please try again.");
+        }
+      });
 
-      // ✅ STEP 2: Initialize Razorpay with backend order details
-      await _initializeRazorpayWithOrder(plan);
-    } catch (e) {
-      // Hide loading dialog if still showing
-      if (mounted && Navigator.canPop(context)) {
-        Navigator.pop(context);
+      try {
+        // ✅ STEP 1: Create order with backend first
+        NyLogger.info('🔄 Creating payment order...');
+        showLoadingDialog(trans("Creating payment order..."));
+
+        final courseApiService = CourseApiService();
+        _currentOrderDetails = await courseApiService.createPaymentOrder(
+          courseId: course!.id,
+          planType: plan.planType,
+          paymentCardId: null, // Add payment card support if needed
+        );
+
+        // Hide loading dialog
+        if (mounted && Navigator.canPop(context)) {
+          Navigator.pop(context);
+        }
+
+        _currentOrderId = _currentOrderDetails!['order_id'];
+        NyLogger.info('✅ Order created successfully: $_currentOrderId');
+
+        // ✅ STEP 2: Start platform-specific payment
+        await _startPlatformPayment(plan);
+      } catch (e) {
+        // Hide loading dialog if still showing
+        if (mounted && Navigator.canPop(context)) {
+          Navigator.pop(context);
+        }
+
+        _resetPaymentState();
+        NyLogger.error('❌ Order creation failed: $e');
+
+        String errorMessage = "Failed to create payment order";
+        if (e.toString().contains('already enrolled') ||
+            e.toString().contains('already have')) {
+          errorMessage = "You are already enrolled in this course";
+        } else if (e.toString().contains('Invalid plan')) {
+          errorMessage = "Invalid subscription plan selected";
+        } else if (e.toString().contains('not found')) {
+          errorMessage = "Course not found. Please try again.";
+        }
+
+        showToastDanger(description: errorMessage);
       }
-
-      _resetPaymentState();
-      NyLogger.error('❌ Order creation failed: $e');
-
-      String errorMessage = "Failed to create payment order";
-      if (e.toString().contains('already enrolled') ||
-          e.toString().contains('already have')) {
-        errorMessage = "You are already enrolled in this course";
-      } else if (e.toString().contains('Invalid plan')) {
-        errorMessage = "Invalid subscription plan selected";
-      } else if (e.toString().contains('not found')) {
-        errorMessage = "Course not found. Please try again.";
-      }
-
-      showToastDanger(description: errorMessage);
     }
   }
 
-  Future<void> _initializeRazorpayWithOrder(SubscriptionPlan plan) async {
+  Future<void> _startPlatformPayment(SubscriptionPlan plan) async {
     try {
       final userInfo = await _getUserInfo();
 
-      var options = {
-        'key': _currentOrderDetails!['key_id'],
-        'order_id': _currentOrderDetails!['order_id'],
-        'amount': _currentOrderDetails!['amount'] * 100,
-        'currency': _currentOrderDetails!['currency'] ?? 'INR',
-        'name': 'Course Enrollment',
-        'description': 'Enrollment for ${course!.title}',
-        'prefill': {
-          'email': _currentOrderDetails!['user_info']['email'] ??
-              userInfo['email'] ??
-              '',
-          'name': _currentOrderDetails!['user_info']['name'] ??
-              userInfo['name'] ??
-              '',
-          'contact': _currentOrderDetails!['user_info']['contact'] ??
-              userInfo['phone'] ??
-              '',
-        },
-        'notes': _currentOrderDetails!['notes'] ??
-            {
-              'course_id': course!.id.toString(),
-              'plan_type': plan.planType,
-            },
-        'theme': {
-          'color': '#EFE458',
+      if (Platform.isIOS) {
+        // For iOS: Just create payment link (order creation)
+        final paymentLinkService = PaymentLinkApiService();
+
+        final result = await paymentLinkService.createPaymentLink(
+          courseId: course!.id,
+          planType: plan.planType,
+          amount: double.tryParse(plan.amount),
+        );
+
+        if (result['success'] == true) {
+          NyLogger.info('✅ Payment link created successfully for iOS');
+          _handlePaymentLinkSuccess(result);
+        } else {
+          throw Exception('Failed to create payment link');
         }
-      };
+      } else {
+        // For Android/other platforms: Use existing Razorpay flow
+        // ✅ Update loading message before starting payment
+        if (mounted) {
+          setState(() {
+            _currentLoadingMessage = "Starting payment...";
+          });
+        }
 
-      NyLogger.debug('💳 Razorpay options: $options');
-      NyLogger.info('🚀 Opening Razorpay payment interface...');
+        // Use platform-specific payment service
+        await _paymentService.startPayment(
+          courseId: course!.id.toString(),
+          planType: plan.planType,
+          amount: plan.amount,
+          courseTitle: course!.title,
+          userInfo: userInfo,
+          orderDetails: _currentOrderDetails,
+        );
 
-      // ✅ Update loading message before opening Razorpay
-      if (mounted) {
-        setState(() {
-          _currentLoadingMessage = "Waiting for payment...";
-        });
+        NyLogger.info(
+            '🚀 Started payment with ${_paymentService.platformName}');
       }
-
-      _razorpay.open(options);
     } catch (e) {
-      _resetAllLoadingStates();
-      NyLogger.error('❌ Razorpay initialization error: $e');
-      showToastDanger(description: _getErrorMessage(e));
+      if (Platform.isIOS) {
+        // For iOS: Just rethrow the error to be handled by the calling method
+        rethrow;
+      } else {
+        // For Android: Use existing error handling
+        _resetAllLoadingStates();
+        NyLogger.error('❌ Payment initialization error: $e');
+        showToastDanger(description: _getErrorMessage(e));
+      }
     }
   }
 
@@ -876,6 +943,139 @@ class _EnrollmentPlanPageState extends NyPage<EnrollmentPlanPage> {
       String errorMessage = _getPaymentErrorMessage(e);
       showToastDanger(description: errorMessage);
     }
+  }
+
+  /// Handle in-app purchase success
+  void _handleInAppPurchaseSuccess(PurchaseDetails purchaseDetails) async {
+    NyLogger.info('✅ In-app purchase successful: ${purchaseDetails.productID}');
+
+    // Cancel timeout and reset state immediately
+    _paymentTimeoutTimer?.cancel();
+    if (mounted) {
+      setState(() {
+        _isProcessingPayment = false;
+        _isVerifyingPayment = true;
+        _currentLoadingMessage =
+            "Purchase successful! Verifying and processing enrollment...";
+      });
+    }
+
+    try {
+      // Complete the in-app purchase
+      await _paymentService.completeInAppPurchase(purchaseDetails);
+
+      // ✅ Update loading message for verification step
+      if (mounted) {
+        setState(() {
+          _currentLoadingMessage = "Verifying purchase with our servers...";
+        });
+      }
+
+      SubscriptionPlan plan = subscriptionPlans[selectedPlanIndex];
+      var courseApiService = CourseApiService();
+
+      // Add small delay to show the verification message
+      await Future.delayed(Duration(milliseconds: 800));
+
+      // For in-app purchases, we need to verify with Apple's receipt
+      // This would typically involve sending the receipt to your backend
+      final purchaseResult =
+          await courseApiService.purchaseCourseWithInAppPurchase(
+        courseId: course!.id,
+        planType: plan.planType,
+        purchaseDetails: purchaseDetails,
+      );
+
+      NyLogger.info('✅ In-app purchase verification successful');
+
+      // ✅ Transition to enrollment completion phase
+      if (mounted) {
+        setState(() {
+          _isVerifyingPayment = false;
+          _isCompletingEnrollment = true;
+          _currentLoadingMessage = "Finalizing your enrollment...";
+        });
+      }
+
+      await _handleSuccessfulEnrollment(
+          courseApiService, purchaseDetails.purchaseID ?? '', purchaseResult);
+    } catch (e) {
+      _resetAllLoadingStates();
+      NyLogger.error('❌ In-app purchase verification failed: $e');
+
+      String errorMessage = _getPaymentErrorMessage(e);
+      showToastDanger(description: errorMessage);
+    }
+  }
+
+  /// Handle in-app purchase error
+  void _handleInAppPurchaseError(String error) {
+    _resetAllLoadingStates();
+    NyLogger.error('❌ In-app purchase failed: $error');
+    showToastDanger(description: error);
+  }
+
+  /// Handle payment link success for iOS
+  void _handlePaymentLinkSuccess(Map<String, dynamic> result) {
+    _resetAllLoadingStates();
+    NyLogger.info(
+        '✅ Payment link created successfully: ${result['reference_id']}');
+
+    // Show simple success dialog with enrollment initiated message
+    _showEnrollmentInitiatedDialog(result);
+  }
+
+  /// Handle payment link error for iOS
+  void _handlePaymentLinkError(String error) {
+    _resetAllLoadingStates();
+    NyLogger.error('❌ Payment link creation failed: $error');
+    showToastDanger(description: error);
+  }
+
+  /// Show enrollment initiated dialog for iOS
+  void _showEnrollmentInitiatedDialog(Map<String, dynamic> result) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Row(
+            children: [
+              Icon(Icons.check_circle, color: Colors.green, size: 24),
+              SizedBox(width: 8),
+              Text('Enrollment Initiated'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Enrollment initiated successfully!',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+              ),
+              SizedBox(height: 12),
+              Text(
+                'Your enrollment has been initiated successfully. The backend will handle payment processing and course access.',
+                style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              child: Text('Go to Course Tab'),
+              style: TextButton.styleFrom(foregroundColor: Colors.amber),
+              onPressed: () {
+                Navigator.pop(context); // Close dialog
+                routeTo(BaseNavigationHub.path,
+                    navigationType: NavigationType.pushAndRemoveUntil,
+                    removeUntilPredicate: (route) => false);
+              },
+            ),
+          ],
+        );
+      },
+    );
   }
 
   String _getPaymentErrorMessage(dynamic error) {

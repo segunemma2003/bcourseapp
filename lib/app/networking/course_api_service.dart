@@ -746,6 +746,62 @@ class CourseApiService extends NyApiService {
         });
   }
 
+  /// ✅ NEW: Purchase course with in-app purchase (iOS)
+  Future<dynamic> purchaseCourseWithInAppPurchase({
+    required int courseId,
+    required String planType,
+    required dynamic purchaseDetails,
+  }) async {
+    final authToken = await backpackRead('auth_token');
+    if (authToken == null) {
+      throw Exception("Not logged in");
+    }
+
+    Map<String, dynamic> data = {
+      "course_id": courseId,
+      "plan_type": planType,
+      "purchase_details": purchaseDetails,
+      "payment_method": "in_app_purchase",
+    };
+
+    return await network(
+        request: (request) =>
+            request.post("/payments/purchase-course-in-app/", data: data),
+        headers: {
+          "Authorization": "Token $authToken",
+          "Content-Type": "application/json",
+        },
+        handleSuccess: (Response response) async {
+          // Invalidate relevant caches after successful purchase
+          await _invalidatePostPurchaseCaches(courseId);
+          await CacheInvalidationManager.onCoursePurchase(courseId);
+          NyLogger.info('Course purchased successfully via in-app purchase: $courseId');
+          return response.data;
+        },
+        handleFailure: (DioException dioError) {
+          String errorMessage = "Failed to purchase course via in-app purchase";
+
+          if (dioError.response?.data != null) {
+            try {
+              final errorData = dioError.response!.data;
+              if (errorData is Map<String, dynamic>) {
+                if (errorData.containsKey('error')) {
+                  errorMessage = errorData['error'].toString();
+                } else if (errorData.containsKey('message')) {
+                  errorMessage = errorData['message'].toString();
+                } else if (errorData.containsKey('details')) {
+                  errorMessage = errorData['details'].toString();
+                }
+              }
+            } catch (e) {
+              NyLogger.error('Error parsing in-app purchase error response: $e');
+            }
+          }
+
+          throw Exception("$errorMessage: ${dioError.message}");
+        });
+  }
+
   /// ✅ NEW: Get enrollment details as EnrollmentDetails object
   Future<EnrollmentDetails> getEnrollmentDetailsAsObject(int enrollmentId,
       {bool refresh = false}) async {

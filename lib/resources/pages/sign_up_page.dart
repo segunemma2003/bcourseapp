@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_app/resources/pages/base_navigation_hub.dart';
 import 'package:flutter_app/resources/widgets/logo_widget.dart';
@@ -221,42 +222,45 @@ class _SignUpPageState extends NyPage<SignUpPage> {
 
                 const SizedBox(height: 8),
 
-                // Google Button
-                afterNotLocked(
-                  'google_signup', // Note: keeping this key name for signup
-                  child: () => _buildGoogleButton(),
-                  loading: Container(
-                    height: 40,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(28),
-                      border: Border.all(color: Colors.grey[300]!),
-                      color: Colors.grey[50],
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation<Color>(
-                                Colors.grey[600]!),
+                // Only show Google authentication on non-iOS platforms
+                if (!Platform.isIOS) ...[
+                  // Google Button
+                  afterNotLocked(
+                    'google_signup', // Note: keeping this key name for signup
+                    child: () => _buildGoogleButton(),
+                    loading: Container(
+                      height: 40,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(28),
+                        border: Border.all(color: Colors.grey[300]!),
+                        color: Colors.grey[50],
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                  Colors.grey[600]!),
+                            ),
                           ),
-                        ),
-                        SizedBox(width: 8),
-                        Text(
-                          'Signing up with Google...'.tr(),
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
-                            color: Colors.grey[600],
+                          SizedBox(width: 8),
+                          Text(
+                            'Signing up with Google...'.tr(),
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                              color: Colors.grey[600],
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
-                ),
+                ],
 
                 const SizedBox(height: 20),
                 // Already have account
